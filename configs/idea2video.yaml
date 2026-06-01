@@ -1,0 +1,36 @@
+chat_model:
+  init_args:
+    model: doubao-seed-2-0-lite-260428
+    model_provider: volcengine
+    api_key: <YOUR_VOLCENGINE_API_KEY>
+  # Rate limits for chat model API calls
+  # Set to null to disable rate limiting for this service
+  max_requests_per_minute: 500
+  max_requests_per_day: 2000
+
+image_generator:
+  class_path: tools.ImageGeneratorDoubaoSeedreamYunwuAPI
+  init_args:
+    api_key: <YOUR_VOLCENGINE_API_KEY>
+    base_url: https://ark.cn-beijing.volces.com/api/v3/images/generations
+  # Rate limits for image generation API calls
+  # Set to null to disable rate limiting for this service
+  max_requests_per_minute: 10
+  max_requests_per_day: 500
+
+
+video_generator:
+  class_path: tools.VideoGeneratorDoubaoSeedanceYunwuAPI
+  init_args:
+    api_key: <YOUR_VOLCENGINE_API_KEY>
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    t2v_model: doubao-seedance-1-0-pro-250528
+    ff2v_model: doubao-seedance-1-0-pro-250528
+    flf2v_model: doubao-seedance-1-0-pro-250528
+  # Rate limits for video generation API calls
+  # Set to null to disable rate limiting for this service
+  max_requests_per_minute: 2
+  max_requests_per_day: 10
+
+
+working_dir: .working_dir/idea2video

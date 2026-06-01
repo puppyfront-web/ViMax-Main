@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vimax-image-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "redis>=5.2.0",
+    "boto3>=1.35.0",
+    "pydantic>=2.10.0",
+    "python-dotenv>=1.0.1",
+    "pillow>=11.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["vimax_image_worker"]
+
+[project.scripts]
+vimax-image-worker = "vimax_image_worker.main:main"

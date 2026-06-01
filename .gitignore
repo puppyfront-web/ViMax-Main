@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# Node.js (vimax-platform)
+node_modules/
+
+# working directory
+.working_dir/
+.test/
+
+# IDE
+.vscode/
+.idea/
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db

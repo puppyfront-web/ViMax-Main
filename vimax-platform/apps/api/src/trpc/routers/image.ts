@@ -166,4 +166,71 @@ export const assetRouter = t.router({
         mapError(err);
       }
     }),
+
+  // ── Asset Library (资源库) ──────────────────────────────────────
+
+  listAssets: t.procedure
+    .input(
+      z.object({
+        kind: z.enum(["image", "video", "audio"]).optional(),
+        limit: z.number().int().min(1).max(100).default(50),
+        cursor: z.string().uuid().optional(),
+      }).optional(),
+    )
+    .query(async ({ input }) => {
+      const limit = input?.limit ?? 50;
+      const kind = input?.kind;
+      const db = getDb();
+
+      const conditions = [];
+      if (kind) {
+        conditions.push(eq(assets.kind, kind));
+      }
+      if (input?.cursor) {
+        const [cursorAsset] = await db
+          .select({ createdAt: assets.createdAt })
+          .from(assets)
+          .where(eq(assets.id, input.cursor))
+          .limit(1);
+        if (cursorAsset) {
+          conditions.push(lt(assets.createdAt, cursorAsset.createdAt));
+        }
+      }
+
+      const rows = await db
+        .select()
+        .from(assets)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(assets.createdAt))
+        .limit(limit + 1);
+
+      const page = rows.slice(0, limit);
+
+      const items = await Promise.all(
+        page.map(async (asset) => {
+          let downloadUrl: string | undefined;
+          try {
+            downloadUrl = await createPresignedDownloadUrl(asset.storageKey, 300);
+          } catch {
+            // Skip if presigned URL fails
+          }
+          return {
+            asset_id: asset.id,
+            kind: asset.kind,
+            mime_type: asset.mimeType,
+            width: asset.width,
+            height: asset.height,
+            size_bytes: asset.sizeBytes,
+            source: asset.source,
+            download_url: downloadUrl,
+            created_at: asset.createdAt.toISOString(),
+          };
+        }),
+      );
+
+      return {
+        items,
+        nextCursor: rows.length > limit ? rows[limit]?.id : undefined,
+      };
+    }),
 });

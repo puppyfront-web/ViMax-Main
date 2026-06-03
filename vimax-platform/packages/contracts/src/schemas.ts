@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IMAGE_MODES, IMAGE_SIZES } from "./job-types.js";
+import { ALL_IMAGE_JOB_TYPES, IMAGE_MODES, IMAGE_SIZES, PIPELINE_JOB_TYPES, AUDIO_JOB_TYPES } from "./job-types.js";
 
 export const ImageGenerateInputSchema = z
   .object({
@@ -58,7 +58,7 @@ export type AssetConfirmUpload = z.infer<typeof AssetConfirmUploadSchema>;
 
 export const ImageJobPayloadSchema = z.object({
   job_id: z.string().uuid(),
-  job_type: z.enum(["image.t2i", "image.i2i"]),
+  job_type: z.enum(ALL_IMAGE_JOB_TYPES),
   model_id: z.string(),
   credential: z.object({
     class_path: z.string(),
@@ -81,6 +81,55 @@ export const ImageJobPayloadSchema = z.object({
 });
 
 export type ImageJobPayloadValidated = z.infer<typeof ImageJobPayloadSchema>;
+
+// ── Video job payload (forshot.video) ──────────────────────────────
+
+export const VideoJobPayloadSchema = z.object({
+  job_id: z.string().uuid(),
+  job_type: z.enum(["shot.video"]),
+  model_id: z.string(),
+  credential: z.object({
+    class_path: z.string(),
+    api_key: z.string(),
+    base_url: z.string().optional(),
+    model: z.string().optional(),
+  }),
+  input: z.object({
+    prompt: z.string(),
+    first_frame_storage_key: z.string().optional(),
+    last_frame_storage_key: z.string().optional(),
+    duration_sec: z.number().int().positive().optional(),
+    resolution: z.string().optional(),
+  }),
+  callback: z.object({
+    event_channel: z.string(),
+    upload_bucket: z.string(),
+    upload_prefix: z.string(),
+  }),
+  cache_key: z.string(),
+  timeout_ms: z.number().int().positive(),
+});
+
+export type VideoJobPayloadValidated = z.infer<typeof VideoJobPayloadSchema>;
+
+// ── Concat job payload ────────────────────────────────────────────────
+
+export const ConcatJobPayloadSchema = z.object({
+  job_id: z.string().uuid(),
+  job_type: z.enum(["concat.videos"]),
+  input: z.object({
+    storage_keys: z.array(z.string()),
+  }),
+  callback: z.object({
+    event_channel: z.string(),
+    upload_bucket: z.string(),
+    upload_prefix: z.string(),
+  }),
+  cache_key: z.string(),
+  timeout_ms: z.number().int().positive(),
+});
+
+export type ConcatJobPayloadValidated = z.infer<typeof ConcatJobPayloadSchema>;
 
 export const JobEventSchema = z.discriminatedUnion("type", [
   z.object({
@@ -119,3 +168,50 @@ export const JobEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type JobEventValidated = z.infer<typeof JobEventSchema>;
+
+// ── Pipeline job payload ───────────────────────────────────────────
+
+export const PipelineJobPayloadSchema = z.object({
+  job_id: z.string().uuid(),
+  job_type: z.enum(PIPELINE_JOB_TYPES),
+  credential: z.object({
+    class_path: z.string(),
+    api_key: z.string(),
+    base_url: z.string().optional(),
+    model: z.string().optional(),
+  }),
+  input: z.object({
+    content: z.string(),
+    // For story_push: reference image storage keys
+    reference_storage_keys: z.array(z.string()).optional(),
+  }),
+  callback: z.object({
+    event_channel: z.string(),
+    upload_bucket: z.string(),
+    upload_prefix: z.string(),
+  }),
+  cache_key: z.string(),
+  timeout_ms: z.number().int().positive(),
+});
+
+export type PipelineJobPayloadValidated = z.infer<typeof PipelineJobPayloadSchema>;
+
+// ── Audio job payload ──────────────────────────────────────────────
+
+export const AudioJobPayloadSchema = z.object({
+  job_id: z.string().uuid(),
+  job_type: z.enum(AUDIO_JOB_TYPES),
+  input: z.object({
+    prompt: z.string(),
+    duration_sec: z.number().int().positive().optional(),
+  }),
+  callback: z.object({
+    event_channel: z.string(),
+    upload_bucket: z.string(),
+    upload_prefix: z.string(),
+  }),
+  cache_key: z.string(),
+  timeout_ms: z.number().int().positive(),
+});
+
+export type AudioJobPayloadValidated = z.infer<typeof AudioJobPayloadSchema>;

@@ -1,10 +1,11 @@
 import type { JobEventValidated } from "@vimax/contracts";
 import { JobEventSchema } from "@vimax/contracts";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "../../infrastructure/db/client.js";
-import { assets, jobEvents, jobs } from "../../infrastructure/db/schema.js";
+import { assets, canvasNodes, jobEvents, jobs } from "../../infrastructure/db/schema.js";
 import { createPresignedDownloadUrl } from "../../infrastructure/storage/s3.js";
 import { broadcastJobEvent } from "../../realtime/sse.js";
+import { markDownstreamDirty, setNodeStatus, updateNodeDataField } from "../canvas/canvas.service.js";
 
 function mapEventType(type: JobEventValidated["type"]) {
   switch (type) {
@@ -84,6 +85,41 @@ export async function handleJobEvent(raw: string): Promise<void> {
         finishedAt: new Date(),
       })
       .where(eq(jobs.id, parsed.job_id));
+
+    // ── Canvas hook: if this job was triggered by a canvas node, update it ──
+    const [job] = await db
+      .select({ inputSnapshot: jobs.inputSnapshot })
+      .from(jobs)
+      .where(eq(jobs.id, parsed.job_id))
+      .limit(1);
+
+    const canvasMeta = (job?.inputSnapshot as Record<string, unknown> | undefined)
+      ?._canvas as { canvas_id?: string; node_id?: string } | undefined;
+
+    if (canvasMeta?.canvas_id && canvasMeta?.node_id && assetId) {
+      try {
+        await setNodeStatus(
+          canvasMeta.canvas_id,
+          canvasMeta.node_id,
+          "done",
+          assetId,
+        );
+        await markDownstreamDirty(canvasMeta.canvas_id, canvasMeta.node_id);
+
+        // ── Character three-view: update frontAssetId/sideAssetId/backAssetId ──
+        const snapshot = job?.inputSnapshot as Record<string, unknown> | undefined;
+        const view = snapshot?._character_view as string | undefined;
+        if (view === "front" || view === "side" || view === "back") {
+          const field = `${view}AssetId` as "frontAssetId" | "sideAssetId" | "backAssetId";
+          await updateNodeDataField(canvasMeta.canvas_id, canvasMeta.node_id, field, assetId);
+        }
+      } catch (err) {
+        console.error(
+          `[canvas hook] Failed to update node ${canvasMeta.node_id}:`,
+          (err as Error).message,
+        );
+      }
+    }
   }
 
   if (parsed.type === "failed") {
@@ -96,6 +132,27 @@ export async function handleJobEvent(raw: string): Promise<void> {
         finishedAt: new Date(),
       })
       .where(eq(jobs.id, parsed.job_id));
+
+    // ── Canvas hook: mark canvas node as failed ──
+    const [job] = await db
+      .select({ inputSnapshot: jobs.inputSnapshot })
+      .from(jobs)
+      .where(eq(jobs.id, parsed.job_id))
+      .limit(1);
+
+    const canvasMeta = (job?.inputSnapshot as Record<string, unknown> | undefined)
+      ?._canvas as { canvas_id?: string; node_id?: string } | undefined;
+
+    if (canvasMeta?.canvas_id && canvasMeta?.node_id) {
+      try {
+        await setNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "failed");
+      } catch (err) {
+        console.error(
+          `[canvas hook] Failed to mark node ${canvasMeta.node_id} as failed:`,
+          (err as Error).message,
+        );
+      }
+    }
   }
 
   broadcastJobEvent(parsed.job_id, parsed);

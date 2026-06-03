@@ -92,8 +92,125 @@ export const jobEvents = pgTable(
   }),
 );
 
+// ── Canvas enums ───────────────────────────────────────────────────
+
+export const canvasNodeTypeEnum = pgEnum("canvas_node_type", [
+  "script",
+  "character",
+  "storyboard_cell",
+  "shot",
+  "image",
+  "video",
+  "concat",
+]);
+
+export const canvasNodeStatusEnum = pgEnum("canvas_node_status", [
+  "idle",
+  "running",
+  "done",
+  "dirty",
+  "failed",
+]);
+
+// ── Canvas tables ──────────────────────────────────────────────────
+
+export const canvases = pgTable(
+  "canvases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: text("tenant_id").notNull().default("default"),
+    name: text("name").notNull(),
+    viewport: jsonb("viewport").notNull().default({ x: 0, y: 0, zoom: 1 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tenantIdIdx: index("canvases_tenant_id_idx").on(table.tenantId),
+    updatedAtIdx: index("canvases_updated_at_idx").on(table.updatedAt),
+  }),
+);
+
+export const canvasNodes = pgTable(
+  "canvas_nodes",
+  {
+    id: uuid("id").primaryKey(), // client-assigned UUID
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    type: canvasNodeTypeEnum("type").notNull(),
+    position: jsonb("position").notNull().default({ x: 0, y: 0 }),
+    data: jsonb("data").notNull().default({}),
+    outputAssetId: uuid("output_asset_id").references(() => assets.id),
+    status: canvasNodeStatusEnum("status").notNull().default("idle"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    canvasIdIdx: index("canvas_nodes_canvas_id_idx").on(table.canvasId),
+    canvasTypeIdx: index("canvas_nodes_canvas_type_idx").on(table.canvasId, table.type),
+  }),
+);
+
+export const canvasEdges = pgTable(
+  "canvas_edges",
+  {
+    id: uuid("id").primaryKey(), // client-assigned UUID
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    sourceNodeId: uuid("source_node_id")
+      .notNull()
+      .references(() => canvasNodes.id, { onDelete: "cascade" }),
+    targetNodeId: uuid("target_node_id")
+      .notNull()
+      .references(() => canvasNodes.id, { onDelete: "cascade" }),
+    sourceHandle: text("source_handle"),
+    targetHandle: text("target_handle"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    canvasIdIdx: index("canvas_edges_canvas_id_idx").on(table.canvasId),
+    sourceNodeIdx: index("canvas_edges_source_node_idx").on(table.sourceNodeId),
+    targetNodeIdx: index("canvas_edges_target_node_idx").on(table.targetNodeId),
+  }),
+);
+
+// ── TypeScript types ───────────────────────────────────────────────
+
 export type Asset = typeof assets.$inferSelect;
 export type NewAsset = typeof assets.$inferInsert;
 export type Job = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 export type JobEvent = typeof jobEvents.$inferSelect;
+
+export type Canvas = typeof canvases.$inferSelect;
+export type NewCanvas = typeof canvases.$inferInsert;
+export type CanvasNode = typeof canvasNodes.$inferSelect;
+export type NewCanvasNode = typeof canvasNodes.$inferInsert;
+export type CanvasEdge = typeof canvasEdges.$inferSelect;
+export type NewCanvasEdge = typeof canvasEdges.$inferInsert;
+
+// ── Character Library (跨画布角色管理) ──────────────────────────────
+
+export const characters = pgTable(
+  "characters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: text("tenant_id").notNull().default("default"),
+    name: text("name").notNull(),
+    description: text("description"),
+    frontAssetId: uuid("front_asset_id").references(() => assets.id),
+    sideAssetId: uuid("side_asset_id").references(() => assets.id),
+    backAssetId: uuid("back_asset_id").references(() => assets.id),
+    tags: jsonb("tags").default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tenantIdIdx: index("characters_tenant_id_idx").on(table.tenantId),
+    updatedAtIdx: index("characters_updated_at_idx").on(table.updatedAt),
+  }),
+);
+
+export type Character = typeof characters.$inferSelect;
+export type NewCharacter = typeof characters.$inferInsert;

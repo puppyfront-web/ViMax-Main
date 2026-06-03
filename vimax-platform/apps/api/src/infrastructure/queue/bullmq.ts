@@ -1,5 +1,5 @@
 /**
- * BullMQ Queue + Worker for image generation jobs.
+ * BullMQ Queue + Worker for image & video generation jobs.
  *
  * Architecture:
  *   TS API enqueues → BullMQ Queue → Bridge Worker picks up
@@ -9,64 +9,67 @@
  *   → On failed:    BullMQ triggers retry (exponential backoff, 3 attempts)
  */
 import { Queue, Worker, type Job } from "bullmq";
-import type { ImageJobPayload } from "@vimax/contracts";
-import { ImageJobPayloadSchema } from "@vimax/contracts";
+import type { ImageJobPayload, VideoJobPayload } from "@vimax/contracts";
+import { ImageJobPayloadSchema, VideoJobPayloadSchema } from "@vimax/contracts";
 import { config } from "../../config/env.js";
-import { getRedisQueue, QUEUE_KEY } from "../redis/client.js";
+import { getRedisQueue, QUEUE_KEY as IMAGE_QUEUE_KEY } from "../redis/client.js";
 
-// ---- Queue ----
+// ---- Queues ----
 
-const QUEUE_NAME = "q.image.std";
+const IMAGE_QUEUE_NAME = "q.image.std";
+const VIDEO_QUEUE_NAME = "q.video.std";
+const VIDEO_QUEUE_KEY = "vimax:queue:q.video.std";
 
-let _queue: Queue | null = null;
+let _imageQueue: Queue | null = null;
+let _videoQueue: Queue | null = null;
 
 export function getImageQueue(): Queue {
-  if (!_queue) {
-    _queue = new Queue(QUEUE_NAME, {
+  if (!_imageQueue) {
+    _imageQueue = new Queue(IMAGE_QUEUE_NAME, {
       connection: { url: config.redisUrl() },
       defaultJobOptions: {
         attempts: 3,
-        backoff: {
-          type: "exponential",
-          delay: 5000,
-        },
-        removeOnComplete: { age: 3600 * 24 },   // keep 1 day
-        removeOnFail: { age: 3600 * 24 * 7 },     // keep 1 week
+        backoff: { type: "exponential", delay: 5000 },
+        removeOnComplete: { age: 3600 * 24 },
+        removeOnFail: { age: 3600 * 24 * 7 },
       },
     });
   }
-  return _queue;
+  return _imageQueue;
 }
 
-// ---- Bridge Worker ----
-// Takes BullMQ jobs and pushes them to the Redis list that the Python
-// worker BRPOPs from.  The Python worker is unaware of BullMQ; it just
-// reads raw JSON from the list and publishes events back via Pub/Sub.
+export function getVideoQueue(): Queue {
+  if (!_videoQueue) {
+    _videoQueue = new Queue(VIDEO_QUEUE_NAME, {
+      connection: { url: config.redisUrl() },
+      defaultJobOptions: {
+        attempts: 2,
+        backoff: { type: "exponential", delay: 10000 },
+        removeOnComplete: { age: 3600 * 24 * 7 },
+        removeOnFail: { age: 3600 * 24 * 14 },
+      },
+    });
+  }
+  return _videoQueue;
+}
 
-let _bridgeWorker: Worker | null = null;
+// ---- Image Bridge Worker ----
+
+let _imageBridgeWorker: Worker | null = null;
 
 export function startBridgeWorker(): Worker {
-  if (_bridgeWorker) return _bridgeWorker;
+  if (_imageBridgeWorker) return _imageBridgeWorker;
 
-  _bridgeWorker = new Worker(
-    QUEUE_NAME,
+  _imageBridgeWorker = new Worker(
+    IMAGE_QUEUE_NAME,
     async (job: Job) => {
       const payload = job.data as ImageJobPayload;
-
-      // Validate payload before forwarding
       const parsed = ImageJobPayloadSchema.safeParse(payload);
       if (!parsed.success) {
-        throw new Error(`Invalid job payload: ${parsed.error.message}`);
+        throw new Error(`Invalid image job payload: ${parsed.error.message}`);
       }
-
       const redis = getRedisQueue();
-      await redis.lpush(QUEUE_KEY, JSON.stringify(payload));
-
-      // The Python worker will publish events to events:job:{job_id}.
-      // The TS PubSub consumer (pubsub/consumer.ts) receives them and
-      // updates DB + SSE connections.  The bridge worker does NOT wait
-      // for completion — it just forwards and returns.  Completion/
-      // failure is handled out-of-band via Pub/Sub.
+      await redis.lpush(IMAGE_QUEUE_KEY, JSON.stringify(payload));
     },
     {
       connection: { url: config.redisUrl() },
@@ -74,22 +77,64 @@ export function startBridgeWorker(): Worker {
     },
   );
 
-  _bridgeWorker.on("failed", (job, err) => {
-    console.error(`[BullMQ bridge] Job ${job?.id} failed:`, err.message);
+  _imageBridgeWorker.on("failed", (job, err) => {
+    console.error(`[BullMQ image bridge] Job ${job?.id} failed:`, err.message);
+  });
+  _imageBridgeWorker.on("completed", (job) => {
+    console.log(`[BullMQ image bridge] Job ${job.id} forwarded`);
   });
 
-  _bridgeWorker.on("completed", (job) => {
-    console.log(`[BullMQ bridge] Job ${job.id} forwarded to Python queue`);
-  });
-
-  return _bridgeWorker;
+  return _imageBridgeWorker;
 }
+
+// ---- Video Bridge Worker ----
+
+let _videoBridgeWorker: Worker | null = null;
+
+export function startVideoBridgeWorker(): Worker {
+  if (_videoBridgeWorker) return _videoBridgeWorker;
+
+  _videoBridgeWorker = new Worker(
+    VIDEO_QUEUE_NAME,
+    async (job: Job) => {
+      const payload = job.data as VideoJobPayload;
+      const parsed = VideoJobPayloadSchema.safeParse(payload);
+      if (!parsed.success) {
+        throw new Error(`Invalid video job payload: ${parsed.error.message}`);
+      }
+      const redis = getRedisQueue();
+      await redis.lpush(VIDEO_QUEUE_KEY, JSON.stringify(payload));
+    },
+    {
+      connection: { url: config.redisUrl() },
+      concurrency: 2, // Video generation is slower/expensive
+    },
+  );
+
+  _videoBridgeWorker.on("failed", (job, err) => {
+    console.error(`[BullMQ video bridge] Job ${job?.id} failed:`, err.message);
+  });
+  _videoBridgeWorker.on("completed", (job) => {
+    console.log(`[BullMQ video bridge] Job ${job.id} forwarded`);
+  });
+
+  return _videoBridgeWorker;
+}
+
+// ---- Teardown ----
 
 export async function closeQueue(): Promise<void> {
   await Promise.all([
-    _queue?.close(),
-    _bridgeWorker?.close(),
+    _imageQueue?.close(),
+    _videoQueue?.close(),
+    _imageBridgeWorker?.close(),
+    _videoBridgeWorker?.close(),
   ]);
-  _queue = null;
-  _bridgeWorker = null;
+  _imageQueue = null;
+  _videoQueue = null;
+  _imageBridgeWorker = null;
+  _videoBridgeWorker = null;
 }
+
+// Re-export for backward compat
+export { getImageQueue as getQueue };

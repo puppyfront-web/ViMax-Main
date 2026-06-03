@@ -93,6 +93,63 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  worker-video:
+    build:
+      context: .
+      dockerfile: workers/image/Dockerfile
+    command: ["python", "-m", "vimax_image_worker.video_main"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      VIMAX_ROOT: /app/vimax
+    volumes:
+      - ..:/app/vimax:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker-concat:
+    build:
+      context: .
+      dockerfile: workers/image/Dockerfile
+    command: ["python", "-m", "vimax_image_worker.concat_main"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      VIMAX_ROOT: /app/vimax
+    volumes:
+      - ..:/app/vimax:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker-pipeline:
+    build:
+      context: .
+      dockerfile: workers/image/Dockerfile
+    command: ["python", "-m", "vimax_image_worker.pipeline_main"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      VIMAX_ROOT: /app/vimax
+    volumes:
+      - ..:/app/vimax:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
   minio_data:

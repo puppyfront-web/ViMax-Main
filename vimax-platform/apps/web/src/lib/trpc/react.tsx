@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink } from "@trpc/client";
 import { useState, type ReactNode } from "react";
-import { trpc } from "./client.js";
+import { trpc } from "./client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/trpc";
 

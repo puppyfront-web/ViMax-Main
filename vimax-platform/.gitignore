@@ -5,3 +5,10 @@ dist/
 *.log
 .turbo/
 .drizzle/
+
+# Next.js
+apps/web/.next/
+apps/web/next-env.d.ts
+
+# Drizzle
+apps/api/drizzle/

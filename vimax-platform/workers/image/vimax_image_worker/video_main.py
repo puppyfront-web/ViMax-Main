@@ -1,4 +1,4 @@
-"""BullMQ-compatible Redis queue consumer for image generation jobs."""
+"""BullMQ-compatible Redis queue consumer for video generation jobs."""
 
 from __future__ import annotations
 
@@ -7,13 +7,12 @@ import logging
 import os
 import signal
 import sys
-import time
 from pathlib import Path
 
 import redis
 from dotenv import load_dotenv
 
-from vimax_image_worker.handler import handle_image_job
+from vimax_image_worker.video_handler import handle_video_job
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-QUEUE_NAME = "q.image.std"
+QUEUE_NAME = "q.video.std"
 QUEUE_KEY = f"vimax:queue:{QUEUE_NAME}"
 
 
@@ -44,14 +43,14 @@ def main() -> None:
         socket_connect_timeout=5,
     )
 
-    logger.info("ViMax image worker started, queue=%s", QUEUE_NAME)
+    logger.info("ViMax video worker started, queue=%s", QUEUE_NAME)
 
     running = True
 
     def shutdown(_signum, _frame):
         nonlocal running
         running = False
-        logger.info("Shutting down...")
+        logger.info("Shutting down video worker...")
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -64,9 +63,9 @@ def main() -> None:
         _, raw = item
         try:
             payload = json.loads(raw)
-            handle_image_job(payload, client)
+            handle_video_job(payload, client)
         except Exception:
-            logger.exception("Failed to process job")
+            logger.exception("Failed to process video job")
 
 
 if __name__ == "__main__":

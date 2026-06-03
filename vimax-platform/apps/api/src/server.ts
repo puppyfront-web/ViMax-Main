@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { config } from "./config/env.js";
 import { getDb } from "./infrastructure/db/client.js";
-import { startBridgeWorker } from "./infrastructure/queue/bullmq.js";
+import { startBridgeWorker, startVideoBridgeWorker } from "./infrastructure/queue/bullmq.js";
 import { startJobEventConsumer } from "./infrastructure/pubsub/consumer.js";
 import { jobSseHandler } from "./realtime/job-sse.route.js";
 import { appRouter } from "./trpc/router.js";
@@ -44,9 +44,16 @@ async function bootstrap() {
 
   try {
     startBridgeWorker();
-    console.log("BullMQ bridge worker started");
+    console.log("BullMQ image bridge worker started");
   } catch (err) {
-    console.warn("BullMQ bridge worker not started:", (err as Error).message);
+    console.warn("BullMQ image bridge not started:", (err as Error).message);
+  }
+
+  try {
+    startVideoBridgeWorker();
+    console.log("BullMQ video bridge worker started");
+  } catch (err) {
+    console.warn("BullMQ video bridge not started:", (err as Error).message);
   }
 
   try {

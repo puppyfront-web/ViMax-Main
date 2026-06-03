@@ -1,5 +1,6 @@
 import { initTRPC } from "@trpc/server";
-import { IMAGE_MODELS } from "@vimax/contracts";
+import { IMAGE_MODELS, VIDEO_MODELS } from "@vimax/contracts";
+import { canvasRouter } from "./routers/canvas.js";
 import { assetRouter, imageRouter } from "./routers/image.js";
 
 const t = initTRPC.create();
@@ -11,10 +12,14 @@ export const appRouter = t.router({
     listImageModels: t.procedure.query(() => ({
       items: IMAGE_MODELS.map(({ init_args: _init, class_path: _cls, ...rest }) => rest),
     })),
+    listVideoModels: t.procedure.query(() => ({
+      items: VIDEO_MODELS.map(({ init_args: _init, class_path: _cls, ...rest }) => rest),
+    })),
   }),
 
   image: imageRouter,
   asset: assetRouter,
+  canvas: canvasRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -17,3 +17,52 @@
     font-family: "Inter", system-ui, -apple-system, sans-serif;
   }
 }
+
+@keyframes nodePulse {
+  0%, 100% {
+    box-shadow: 0 0 8px var(--glow-color, #f59e0b66),
+                0 0 20px var(--glow-color, #f59e0b22);
+  }
+  50% {
+    box-shadow: 0 0 16px var(--glow-color, #f59e0b99),
+                0 0 32px var(--glow-color, #f59e0b44);
+  }
+}
+
+@keyframes nodeDirtyPulse {
+  0%, 100% {
+    border-color: #ef4444;
+    box-shadow: 0 0 6px #ef444433;
+  }
+  50% {
+    border-color: #ef444488;
+    box-shadow: 0 0 12px #ef444466;
+  }
+}
+
+/* ── Ensure cursor is always visible (Windows dark-bg fix) ── */
+/* React Flow pane: always show a visible cursor; grab/grabbing are too subtle on dark backgrounds */
+.react-flow__pane,
+.react-flow__pane.draggable {
+  cursor: default !important;
+}
+
+.react-flow__pane.dragging {
+  cursor: grabbing !important;
+}
+
+/* React Flow nodes: use pointer instead of grab on hover (grab is nearly invisible on dark Windows) */
+.react-flow__node,
+.react-flow__node.draggable {
+  cursor: pointer !important;
+}
+
+.react-flow__node.dragging {
+  cursor: grabbing !important;
+}
+
+/* Node inner content should keep the inherited cursor */
+.node-shell,
+.node-header {
+  cursor: inherit !important;
+}

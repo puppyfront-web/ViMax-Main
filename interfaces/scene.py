@@ -33,3 +33,25 @@ class Scene(BaseModel):
         s += f"\nCharacters: {', '.join([str(c) for c in self.characters])}"
         s += f"\nScript: \n{self.script}"
         return s
+
+
+
+# class Scene(BaseModel):
+#     index: int = Field(
+#         description="The index of the scene within the event, starting from 0"
+#     )
+#     character_indices: List[int] = Field(
+#         description="List of indices of characters appearing in this scene, including main characters, supporting characters, and extras.",
+#     )
+#     environment_index: int = Field(
+#         description="The index of the environment where the scene takes place."
+#     )
+#     key_items_indices: List[int] = Field(
+#         default=[],
+#         description="List of indices of key items involved in this scene, if any.",
+#     )
+#     script: str = Field(
+#         description="The script of the scene, including actions and dialogues"
+#     )
+
+

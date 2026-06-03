@@ -1,7 +1,7 @@
 [project]
 name = "autolongvideogeneration"
 version = "0.1.0"
-description = "ViMax — Automated long-form video generation from ideas, scripts, and novels"
+description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -32,6 +32,6 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
-[[tool.uv.index]]
+[[index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true

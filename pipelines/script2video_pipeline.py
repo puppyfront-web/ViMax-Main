@@ -16,6 +16,12 @@ from utils.provider_presets import resolve_chat_model_config
 
 class Script2VideoPipeline:
 
+    # events
+    character_portrait_events = {}
+    shot_desc_events = {}
+    frame_events = {}
+
+
     def __init__(
         self,
         chat_model: str,
@@ -27,11 +33,6 @@ class Script2VideoPipeline:
         self.chat_model = chat_model
         self.image_generator = image_generator
         self.video_generator = video_generator
-
-        # Per-instance event dictionaries (was class-level — caused shared state bugs)
-        self.character_portrait_events = {}
-        self.shot_desc_events = {}
-        self.frame_events = {}
 
         self.character_extractor = CharacterExtractor(chat_model=self.chat_model)
         self.character_portraits_generator = CharacterPortraitsGenerator(image_generator=self.image_generator)
@@ -63,13 +64,25 @@ class Script2VideoPipeline:
     async def __call__(
         self,
         script: str,
-        user_requirement: str = "",
-        style: str = "realistic movie style",
+        user_requirement: str,
+        style: str,
         characters: List[CharacterInScene] = None,
         character_portraits_registry: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
     ):
         if characters is None:
             characters = await self.extract_characters(script=script)
+
+            # characters_path = os.path.join(self.working_dir, "characters.json")
+            # if os.path.exists(characters_path):
+            #     with open(characters_path, "r", encoding="utf-8") as f:
+            #         characters = [CharacterInScene.model_validate(c) for c in json.load(f)]
+            #     print(f"🚀 Loaded {len(characters)} characters from existing file.")
+            # else:
+            #     print(f"🔍 Extracting characters from script...")
+            #     characters = await self.extract_characters(script=script)
+            #     with open(characters_path, "w", encoding="utf-8") as f:
+            #         json.dump([c.model_dump() for c in characters], f, ensure_ascii=False, indent=4)
+            #     print(f"☑️ Extracted {len(characters)} characters from script and saved to {characters_path}.")
 
         if character_portraits_registry is None:
             character_portraits_registry_path = os.path.join(self.working_dir, "character_portraits_registry.json")
@@ -140,7 +153,7 @@ class Script2VideoPipeline:
                 for shot_description in shot_descriptions
             ]
             final_video = concatenate_videoclips(video_clips)
-            final_video.write_videofile(final_video_path)
+            final_video.write_videofile(final_video_path, codec="libx264", preset="medium")
             print(f"☑️ Concatenated videos, saved to {final_video_path}.")
 
         return final_video_path

@@ -147,7 +147,7 @@ class TestPipelineInitFromConfig(unittest.TestCase):
 
     @patch("pipelines.idea2video_pipeline.init_chat_model")
     @patch("pipelines.idea2video_pipeline.RenderBackend.from_config")
-    def test_volcengine_config_resolution(self, mock_backend, mock_init):
+    def test_existing_openrouter_config_still_works(self, mock_backend, mock_init):
         mock_model = MagicMock()
         mock_init.return_value = mock_model
         mock_backend.return_value = MagicMock(image_generator=MagicMock(), video_generator=MagicMock())
@@ -158,7 +158,7 @@ class TestPipelineInitFromConfig(unittest.TestCase):
         mock_init.assert_called_once()
         call_kwargs = mock_init.call_args[1]
         self.assertEqual(call_kwargs["model_provider"], "openai")
-        self.assertEqual(call_kwargs["base_url"], "https://ark.cn-beijing.volces.com/api/v3")
+        self.assertEqual(call_kwargs["base_url"], "https://openrouter.ai/api/v1")
 
 
 if __name__ == "__main__":

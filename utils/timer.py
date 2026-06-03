@@ -9,6 +9,7 @@ class Timer:
         postfix: str = "End at {end_time}, took {duration} seconds.",
     ):
         self.prefix = prefix
+        self.format = format
         self.postfix = postfix
 
     def __call__(

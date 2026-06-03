@@ -70,8 +70,7 @@ class VideoGeneratorVeoGoogleAPI:
 
         for attempt in range(max_retries):
             try:
-                operation = await asyncio.to_thread(
-                    self.client.models.generate_videos,
+                operation = self.client.models.generate_videos(
                     **params,
                     config=types.GenerateVideosConfig(**config_params),
                 )
@@ -86,9 +85,7 @@ class VideoGeneratorVeoGoogleAPI:
 
         while not operation.done:
             await asyncio.sleep(2)
-            operation = await asyncio.to_thread(
-                self.client.operations.get, operation
-            )
+            operation = self.client.operations.get(operation)
             logging.info(f"Video generation not completed, waiting 2 seconds...")
 
         # Check if operation completed successfully

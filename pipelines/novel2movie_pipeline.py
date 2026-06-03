@@ -543,16 +543,13 @@ class Novel2MoviePipeline:
                 scene_video_dir = os.path.join(working_dir_scene_videos, f"event_{event.index}", f"scene_{scene.idx}")
                 os.makedirs(scene_video_dir, exist_ok=True)
 
-                # NOTE: Reusing a shared pipeline instance and mutating its
-                # working_dir per iteration is not thread/async-safe.
-                # Consider creating a fresh Script2VideoPipeline per scene.
                 self.script2video_pipeline.working_dir = scene_video_dir
                 script = scene.script
                 style = "realistic movie style"
-                character_portraits_registry = {}
+                character_registry = {}
                 for character in scene.characters:
-                    character_portraits_registry[character.identifier_in_scene] = {
-                        "reference": {
+                    character_registry[character.identifier_in_scene] = [
+                        {
                             "path": os.path.join(
                                 working_dir_character_portrait,
                                 f"event_{event.index}",
@@ -561,12 +558,11 @@ class Novel2MoviePipeline:
                             ),
                             "description": f"A portrait of {character.identifier_in_scene}",
                         }
-                    }
+                    ]
                 await self.script2video_pipeline(
                     script=script,
-                    user_requirement="",
                     style=style,
-                    character_portraits_registry=character_portraits_registry,
+                    character_registry=character_registry
                 )
                 print(f"✅ Generated video for event {event.index}, scene {scene.idx}, saved to {scene_video_dir}")
         print("📋 Step 7: Generate the video for each scene".center(80, "-"))

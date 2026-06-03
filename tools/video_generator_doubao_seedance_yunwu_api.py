@@ -1,10 +1,9 @@
 import logging
-from typing import List, Literal, Optional
+from typing import List, Literal
 import asyncio
 import aiohttp
 from interfaces.video_output import VideoOutput
 from utils.image import image_path_to_b64
-from utils.rate_limiter import RateLimiter
 
 
 class VideoGeneratorDoubaoSeedanceYunwuAPI:
@@ -14,15 +13,11 @@ class VideoGeneratorDoubaoSeedanceYunwuAPI:
         t2v_model: str = "doubao-seedance-1-0-lite-t2v-250428",
         ff2v_model: str = "doubao-seedance-1-0-lite-i2v-250428",
         flf2v_model: str = "doubao-seedance-1-0-lite-i2v-250428",
-        base_url: str = "https://yunwu.ai/volc/v1",
-        rate_limiter: Optional[RateLimiter] = None,
     ):
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
         self.t2v_model = t2v_model
         self.ff2v_model = ff2v_model
         self.flf2v_model = flf2v_model
-        self.rate_limiter = rate_limiter
 
 
     async def create_video_generation_task(
@@ -55,7 +50,7 @@ class VideoGeneratorDoubaoSeedanceYunwuAPI:
 
         logging.info(f"Calling {model} to generate video...")
 
-        url = f"{self.base_url}/contents/generations/tasks"
+        url = "https://yunwu.ai/volc/v1/contents/generations/tasks"
 
 
         content = [
@@ -124,7 +119,7 @@ class VideoGeneratorDoubaoSeedanceYunwuAPI:
         Returns:
             Video URL string
         """
-        url = f"{self.base_url}/contents/generations/tasks/{task_id}"
+        url = f"https://yunwu.ai/volc/v1/contents/generations/tasks/{task_id}"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
         }

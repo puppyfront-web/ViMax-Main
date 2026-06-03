@@ -29,15 +29,6 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
         ],
         "temperature_range": (0.0, 1.0),
     },
-    "volcengine": {
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "env_key": "VOLCENGINE_API_KEY",
-        "default_model": "doubao-seed-2-0-lite-260428",
-        "models": [
-            "doubao-seed-2-0-lite-260428",
-        ],
-        "temperature_range": (0.0, 1.0),
-    },
 }
 
 

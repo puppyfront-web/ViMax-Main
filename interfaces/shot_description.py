@@ -37,11 +37,58 @@ class ShotBriefDescription(BaseModel):
         ],
     )
 
+    # sound_effect: Optional[str] = Field(
+    #     default=None,
+    #     description="The sound effects used in the shot.",
+    #     examples=[
+    #         "Ambient sound (supermarket background noise, shopping cart wheels rolling)",
+    #         None,
+    #     ],
+    # )
+    # speaker: Optional[str] = Field(
+    #     default=None,
+    #     description="The speaker in the shot, if applicable. If there is no speaker, this field should be set to None.",
+    #     examples=[
+    #         "Alice",
+    #         None,
+    #     ],
+    # )
+    # is_speaker_lip_visible: Optional[bool] = Field(
+    #     default=None,
+    #     description="Indicates whether the speaker's lips are visible in the shot. If there is no speaker, this field should be set to None.",
+    #     examples=[
+    #         True,
+    #         False,
+    #         None,
+    #     ],
+    # )
+    # line: Optional[str] = Field(
+    #     default=None,
+    #     description="The dialogue or monologue in the shot, if applicable. If there is a speaker, there must be a line. If there is no speaker, this field should be set to None.",
+    #     examples=[
+    #         "Hello, how are you?",
+    #         None,
+    #     ],
+    # )
+    # emotion: Optional[str] = Field(
+    #     default=None,
+    #     description="The emotion of the speaker when delivering the line, if applicable. If there is a speaker, there must be an emotion. If there is no speaker, this field should be set to None.",
+    #     examples=[
+    #         "Happy",
+    #         None,
+    #     ],
+    # )
+
     def __str__(self):
         s = f"Shot {self.idx}:\n"
         s += f"Camera Index: {self.cam_idx}\n"
         s += f"Visual: {self.visual_desc}\n"
-        s += f"Audio: {self.audio_desc}"
+        if self.sound_effect is not None or self.speaker is not None:
+            s += f"Audio:"
+            if self.sound_effect is not None:
+                s += f"[Sound Effect] {self.sound_effect}"
+            if self.speaker is not None:
+                s += f"[Speaker] {self.speaker} ({self.emotion}): {self.line}"
         return s
 
 
@@ -120,3 +167,23 @@ class ShotDescription(BaseModel):
             None,
         ],
     )
+    # sound_effect: Optional[str] = Field(
+    #     default=None,
+    #     description="The sound effects used in the shot. For example, a door creaking or footsteps approaching.",
+    # )
+    # speaker: Optional[str] = Field(
+    #     default=None,
+    #     description="The speaker in the shot, if applicable. If there is no speaker, this field should be set to None.",
+    # )
+    # is_speaker_lip_visible: Optional[bool] = Field(
+    #     default=None,
+    #     description="Indicates whether the speaker's lips are visible in the shot. If there is no speaker, this field should be set to None.",
+    # )
+    # line: Optional[str] = Field(
+    #     default=None,
+    #     description="The dialogue or monologue in the shot, if applicable. If there is a speaker, there must be a line. If there is no speaker, this field should be set to None.",
+    # )
+    # emotion: Optional[str] = Field(
+    #     default=None,
+    #     description="The emotion of the speaker when delivering the line, if applicable. If there is a speaker, there must be an emotion. If there is no speaker, this field should be set to None.",
+    # )

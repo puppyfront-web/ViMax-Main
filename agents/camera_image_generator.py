@@ -144,6 +144,7 @@ class CameraImageGenerator:
             cam.parent_cam_idx = parent_cam_item.parent_cam_idx if parent_cam_item is not None else None
             cam.parent_shot_idx = parent_cam_item.parent_shot_idx if parent_cam_item is not None else None
             cam.reason = parent_cam_item.reason if parent_cam_item is not None else None
+            cam.parent_shot_idx = parent_cam_item.parent_shot_idx if parent_cam_item is not None else None
             cam.is_parent_fully_covers_child = parent_cam_item.is_parent_fully_covers_child if parent_cam_item is not None else None
             cam.missing_info = parent_cam_item.missing_info if parent_cam_item is not None else None
         return cameras

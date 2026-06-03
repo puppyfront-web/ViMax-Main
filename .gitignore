@@ -7,20 +7,8 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv/
-
-# Node.js (vimax-platform)
-node_modules/
+.venv
 
 # working directory
 .working_dir/
 .test/
-
-# IDE
-.vscode/
-.idea/
-*.tsbuildinfo
-
-# OS
-.DS_Store
-Thumbs.db

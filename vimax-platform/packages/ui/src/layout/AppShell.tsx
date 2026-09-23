@@ -11,6 +11,10 @@ export interface AppShellProps {
   sidebar?: ReactNode;
   /** Collapse sidebar to icon-only */
   sidebarCollapsed?: boolean;
+  /** Extra classes on the sidebar <aside>, e.g. "hidden lg:flex" to hide on mobile */
+  sidebarClassName?: string;
+  /** Mobile bottom navigation (<md). Rendered below the body, always visible. */
+  bottomNav?: ReactNode;
   /** Main content */
   children: ReactNode;
   /** Additional class on the shell wrapper */
@@ -21,6 +25,8 @@ export function AppShell({
   topNav,
   sidebar,
   sidebarCollapsed = false,
+  sidebarClassName,
+  bottomNav,
   children,
   className,
 }: AppShellProps) {
@@ -41,7 +47,10 @@ export function AppShell({
         {/* Sidebar */}
         {sidebar && (
           <aside
-            className="flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] overflow-y-auto transition-all duration-[var(--transition-normal)]"
+            className={cn(
+              "flex-shrink-0 overflow-y-auto bg-transparent py-3 pl-3 transition-all duration-[var(--transition-normal)]",
+              sidebarClassName,
+            )}
             style={{ width: sidebarWidth }}
           >
             {sidebar}
@@ -51,6 +60,9 @@ export function AppShell({
         {/* Main Content */}
         <main className="flex-1 overflow-auto">{children}</main>
       </div>
+
+      {/* Mobile bottom navigation */}
+      {bottomNav}
     </div>
   );
 }

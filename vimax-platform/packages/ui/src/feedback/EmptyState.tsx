@@ -26,8 +26,8 @@ export function EmptyState({
         className,
       )}
     >
-      <div className="text-[var(--color-text-dim)]">
-        {icon ?? <Inbox className="size-10" />}
+      <div className="flex size-14 items-center justify-center rounded-2xl border border-[var(--color-border)] bg-[var(--color-accent-subtle)] text-[var(--color-accent)]">
+        {icon ?? <Inbox className="size-6" />}
       </div>
       <div>
         <h3 className="text-sm font-medium text-[var(--color-text)]">

@@ -17,7 +17,7 @@ export interface ButtonProps extends ComponentPropsWithoutRef<"button"> {
 
 const variantStyles: Record<ButtonVariant, string> = {
   primary:
-    "bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] shadow-sm hover:shadow-md active:scale-[0.98] transition-all",
+    "bg-[var(--color-accent)] text-[var(--color-accent-on)] hover:bg-[var(--color-accent-hover)] shadow-sm hover:shadow-md active:scale-[0.98] transition-all",
   secondary:
     "bg-[var(--color-surface)] text-[var(--color-text)] border border-[var(--color-border)] hover:bg-[var(--color-surface-elevated)] hover:border-[var(--color-border-hover)] hover:shadow-sm active:scale-[0.98] transition-all",
   ghost:

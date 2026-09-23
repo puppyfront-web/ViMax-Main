@@ -26,6 +26,10 @@ export { Select } from "./primitives/Select";
 export type { SelectProps, SelectOption } from "./primitives/Select";
 export { Switch } from "./primitives/Switch";
 export type { SwitchProps } from "./primitives/Switch";
+export { SegmentedControl } from "./primitives/SegmentedControl";
+export type { SegmentedControlProps, SegmentedControlItem } from "./primitives/SegmentedControl";
+export { IconButton } from "./primitives/IconButton";
+export type { IconButtonProps } from "./primitives/IconButton";
 
 // Layout
 export { AppShell } from "./layout/AppShell";
@@ -36,6 +40,10 @@ export { PageContainer } from "./layout/PageContainer";
 export type { PageContainerProps } from "./layout/PageContainer";
 export { Panel } from "./layout/Panel";
 export type { PanelProps } from "./layout/Panel";
+export { PageHeader } from "./layout/PageHeader";
+export type { PageHeaderProps } from "./layout/PageHeader";
+export { BottomTabBar } from "./layout/BottomTabBar";
+export type { BottomTabBarProps, BottomTabBarItem } from "./layout/BottomTabBar";
 
 // Feedback
 export { Toaster, useToast } from "./feedback/Toast";

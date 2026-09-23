@@ -43,15 +43,16 @@ export function TopNav({
         )}
       </div>
 
-      {/* Nav Links — Linear-style: subtle text, accent on active */}
+      {/* Nav Links — Linear-style: subtle text, accent on active; hidden on mobile (BottomTabBar takes over) */}
       {navLinks && (
-        <nav className="flex items-center gap-0.5 ml-2">
+        <nav className="ml-2 hidden items-center gap-0.5 md:flex">
           {navLinks.map((link) => (
             <a
               key={link.href}
               href={link.href}
               className={cn(
                 "px-3 py-1.5 rounded-md text-[13px] font-medium transition-all duration-200 no-underline",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-focus)]",
                 link.active
                   ? "bg-[var(--color-accent-subtle)] text-[var(--color-accent)]"
                   : "text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)] hover:bg-[var(--color-surface-2)]",

@@ -49,7 +49,7 @@ def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
     concat_list = output_path.parent / "concat_list.txt"
     with open(concat_list, "w") as f:
         for p in input_paths:
-            f.write(f"file '{p.as_posix()}'\n")
+            f.write(f"file '{Path(p).as_posix()}'\n")
 
     cmd = [
         "ffmpeg",

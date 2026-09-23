@@ -33,6 +33,8 @@ class VideoJobInput(BaseModel):
     last_frame_storage_key: str | None = None
     duration_sec: int | None = None
     resolution: str | None = None
+    aspect_ratio: str | None = None
+    fps: int | None = None
 
 
 class VideoJobCallback(BaseModel):
@@ -99,11 +101,13 @@ async def _run_video(payload: VideoJobPayload, redis_client) -> None:
         prompt = payload.input.prompt or "cinematic video, smooth motion"
         duration = payload.input.duration_sec or 5
         resolution = payload.input.resolution or "720p"
+        aspect_ratio = payload.input.aspect_ratio or "16:9"
+        fps = payload.input.fps or 16
 
         await reporter.progress(25, "Loading video generator")
 
         generator = _build_video_generator(payload.credential)
-        await reporter.progress(35, f"Generating video ({duration}s, {resolution})")
+        await reporter.progress(35, f"Generating video ({duration}s, {resolution}, {aspect_ratio})")
 
         # Call VideoGenerator.generate_single_video()
         output = await generator.generate_single_video(
@@ -111,6 +115,8 @@ async def _run_video(payload: VideoJobPayload, redis_client) -> None:
             reference_image_paths=ref_paths,
             duration=duration,
             resolution=resolution,
+            aspect_ratio=aspect_ratio,
+            fps=fps,
         )
 
         await reporter.progress(70, "Downloading video result")

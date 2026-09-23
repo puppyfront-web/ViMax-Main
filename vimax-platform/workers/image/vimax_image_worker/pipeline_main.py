@@ -22,17 +22,24 @@ def main():
     log.info("Pipeline worker started, waiting on %s", QUEUE_KEY)
 
     while True:
-        _, raw = r.brpop(QUEUE_KEY)
+        try:
+            _, raw = r.brpop(QUEUE_KEY)
+        except redis.exceptions.RedisError:
+            # A blocking BRPOP can die on a transient socket error; rebuild
+            # the connection instead of taking the worker down.
+            log.warning("Redis connection error on %s, reconnecting", QUEUE_KEY, exc_info=True)
+            r = redis.Redis.from_url(REDIS_URL)
+            continue
         payload = json.loads(raw)
         job_id = payload["job_id"]
         job_type = payload.get("job_type", "unknown")
         log.info("Received %s job: %s", job_type, job_id)
 
         reporter = JobReporter(
-            event_channel=payload["callback"]["event_channel"],
-            redis_client=r,
+            r,
+            payload["callback"]["event_channel"],
+            job_id,
         )
-        reporter._job_id = job_id
 
         try:
             asyncio.run(handle_pipeline_job(payload, reporter))

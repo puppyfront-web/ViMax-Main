@@ -56,7 +56,19 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
 
     while running:
-        item = client.brpop(QUEUE_KEY, timeout=5)
+        try:
+            item = client.brpop(QUEUE_KEY, timeout=5)
+        except redis.RedisError:
+            # Idle blocking connections get dropped by the server/NAT —
+            # rebuild the client instead of taking the worker down.
+            logger.warning("Redis connection error on %s, reconnecting", QUEUE_KEY, exc_info=True)
+            client = redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_timeout=10,
+                socket_connect_timeout=5,
+            )
+            continue
         if not item:
             continue
 

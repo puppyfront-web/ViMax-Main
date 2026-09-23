@@ -14,7 +14,7 @@ log = logging.getLogger("grid-handler")
 
 async def handle_grid_split(payload: dict, reporter: JobReporter):
     """Split an image into a grid and upload each cell."""
-    await reporter.publish_started()
+    await reporter.started()
 
     try:
         input_data = payload["input"]
@@ -72,15 +72,15 @@ async def handle_grid_split(payload: dict, reporter: JobReporter):
 
         # Report completion with the first cell as primary output
         # The full list is in the result
-        await reporter.publish_completed(results[0] if results else {})
+        await reporter.completed(results[0] if results else {})
 
         # Publish additional cells as progress events
         for i, cell_result in enumerate(results[1:], 1):
-            await reporter.publish_progress(
+            await reporter.progress(
                 percent=int(100 * (i + 1) / len(results)),
                 message=json.dumps(cell_result),
             )
 
     except Exception as e:
         log.exception("Grid split failed")
-        await reporter.publish_failed("worker.internal", str(e), retryable=False)
+        await reporter.failed(error_code="worker.internal", error_message=str(e), retryable=False)

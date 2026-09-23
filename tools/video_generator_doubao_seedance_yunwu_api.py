@@ -7,17 +7,26 @@ from utils.image import image_path_to_b64
 
 
 class VideoGeneratorDoubaoSeedanceYunwuAPI:
+    DEFAULT_BASE_URL = "https://yunwu.ai/volc/v1/contents/generations/tasks"
+
     def __init__(
         self,
         api_key: str,
+        base_url: str = "",
+        model: str = "",
         t2v_model: str = "doubao-seedance-1-0-lite-t2v-250428",
         ff2v_model: str = "doubao-seedance-1-0-lite-i2v-250428",
         flf2v_model: str = "doubao-seedance-1-0-lite-i2v-250428",
     ):
         self.api_key = api_key
-        self.t2v_model = t2v_model
-        self.ff2v_model = ff2v_model
-        self.flf2v_model = flf2v_model
+        # Platform job payloads carry the endpoint as base_url and the model
+        # override as model; keep the framework defaults when absent. The
+        # override applies to every generation mode — the platform picks one
+        # generator model explicitly, so ff2v/flf2v must follow it too.
+        self.base_url = base_url or self.DEFAULT_BASE_URL
+        self.t2v_model = model or t2v_model
+        self.ff2v_model = model or ff2v_model
+        self.flf2v_model = model or flf2v_model
 
 
     async def create_video_generation_task(
@@ -50,8 +59,7 @@ class VideoGeneratorDoubaoSeedanceYunwuAPI:
 
         logging.info(f"Calling {model} to generate video...")
 
-        url = "https://yunwu.ai/volc/v1/contents/generations/tasks"
-
+        url = self.base_url
 
         content = [
             {
@@ -90,18 +98,27 @@ class VideoGeneratorDoubaoSeedanceYunwuAPI:
             'Content-Type': 'application/json'
         }
 
-        while True:
+        # A bounded retry: infinite silent retrying hides auth/balance errors
+        # and hammers the provider; the platform surfaces the failure instead.
+        last_error: Exception | None = None
+        for attempt in range(5):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, headers=headers, json=payload) as response:
                         response_json = await response.json()
-                        logging.debug(f"Response: {response_json}")
+                        if response.status >= 400 or "id" not in response_json:
+                            err = response_json.get("error") if isinstance(response_json, dict) else None
+                            detail = err.get("message", "") if isinstance(err, dict) else str(response_json)[:200]
+                            raise RuntimeError(f"video task create {response.status}: {detail}")
                         task_id = response_json["id"]
             except Exception as e:
-                logging.error(f"Error occurred while creating video generation task.\nRetrying in 1 seconds...")
-                await asyncio.sleep(1)
+                last_error = e
+                logging.error(f"Error occurred while creating video generation task (attempt {attempt + 1}/5): {e}")
+                await asyncio.sleep(1 + attempt)
                 continue
             break
+        else:
+            raise RuntimeError(f"video task creation failed after 5 attempts: {last_error}")
 
         logging.info(f"Video generation task created successfully. Task ID: {task_id}")
         return task_id
@@ -119,7 +136,7 @@ class VideoGeneratorDoubaoSeedanceYunwuAPI:
         Returns:
             Video URL string
         """
-        url = f"https://yunwu.ai/volc/v1/contents/generations/tasks/{task_id}"
+        url = f"{self.base_url}/{task_id}"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
         }

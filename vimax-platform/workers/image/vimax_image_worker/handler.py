@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import shutil
 import tempfile
@@ -52,11 +53,14 @@ class ImageJobPayload(BaseModel):
 def _build_generator(credential: ImageJobCredential):
     module_path, cls_name = credential.class_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), cls_name)
-    init_args: dict[str, Any] = {"api_key": credential.api_key}
+    candidates: dict[str, Any] = {"api_key": credential.api_key}
     if credential.base_url:
-        init_args["base_url"] = credential.base_url
+        candidates["base_url"] = credential.base_url
     if credential.model:
-        init_args["model"] = credential.model
+        candidates["model"] = credential.model
+    # Generators hardcode their endpoint; only pass kwargs they accept.
+    accepted = inspect.signature(cls.__init__).parameters
+    init_args = {k: v for k, v in candidates.items() if k in accepted}
     return cls(**init_args)
 
 

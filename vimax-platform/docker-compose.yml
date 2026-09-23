@@ -97,6 +97,8 @@ services:
     build:
       context: .
       dockerfile: workers/image/Dockerfile
+      args:
+        INSTALL_FFMPEG: "true"
     command: ["python", "-m", "vimax_image_worker.video_main"]
     env_file:
       - .env
@@ -116,6 +118,8 @@ services:
     build:
       context: .
       dockerfile: workers/image/Dockerfile
+      args:
+        INSTALL_FFMPEG: "true"
     command: ["python", "-m", "vimax_image_worker.concat_main"]
     env_file:
       - .env

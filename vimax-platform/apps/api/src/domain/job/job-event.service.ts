@@ -6,6 +6,11 @@ import { assets, canvasNodes, jobEvents, jobs } from "../../infrastructure/db/sc
 import { createPresignedDownloadUrl } from "../../infrastructure/storage/s3.js";
 import { broadcastJobEvent } from "../../realtime/sse.js";
 import { markDownstreamDirty, setNodeStatus, updateNodeDataField } from "../canvas/canvas.service.js";
+import { runReadyDirtyChildren } from "../canvas/node-executor.service.js";
+import { broadcastNodeStatus } from "../canvas/node-status.js";
+import { appendVariant, isVariantJob, type VariantEntry } from "../canvas/variations.js";
+import { inferAssetKind, shouldCreateAsset } from "../asset/asset-utils.js";
+import { persistStoryboardSpawn } from "../canvas/storyboard-spawn.js";
 
 function mapEventType(type: JobEventValidated["type"]) {
   switch (type) {
@@ -52,28 +57,77 @@ export async function handleJobEvent(raw: string): Promise<void> {
   }
 
   if (parsed.type === "completed") {
-    const [existingAsset] = await db
-      .select()
-      .from(assets)
-      .where(eq(assets.storageKey, parsed.output.storage_key))
+    const output = parsed.output;
+    const cells = output.cells;
+
+    const [job] = await db
+      .select({ inputSnapshot: jobs.inputSnapshot })
+      .from(jobs)
+      .where(eq(jobs.id, parsed.job_id))
       .limit(1);
 
-    let assetId = existingAsset?.id;
-    if (!assetId) {
-      const [created] = await db
-        .insert(assets)
-        .values({
-          kind: "image",
-          mimeType: parsed.output.mime_type,
-          storageKey: parsed.output.storage_key,
-          sizeBytes: parsed.output.size_bytes,
-          width: parsed.output.width,
-          height: parsed.output.height,
-          sha256: parsed.output.sha256,
-          source: "generated",
+    const canvasMeta = (job?.inputSnapshot as Record<string, unknown> | undefined)
+      ?._canvas as { canvas_id?: string; node_id?: string } | undefined;
+
+    if (Array.isArray(cells) && cells.length > 0 && canvasMeta?.canvas_id && canvasMeta?.node_id) {
+      try {
+        const normalizedCells = cells.map((cell) => ({
+          shotBrief: cell.shotBrief,
+          cameraIdx: cell.cameraIdx,
+          ffDesc: cell.ffDesc ?? "",
+          lfDesc: cell.lfDesc ?? "",
+          motionDesc: cell.motionDesc ?? "",
+          audioDesc: cell.audioDesc ?? "",
+          shotIdx: cell.shotIdx,
+        }));
+        await persistStoryboardSpawn(canvasMeta.canvas_id, canvasMeta.node_id, normalizedCells);
+        await setNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done");
+        broadcastNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done", null, parsed.job_id);
+      } catch (err) {
+        console.error(
+          `[canvas hook] Failed to spawn storyboard cells for node ${canvasMeta.node_id}:`,
+          (err as Error).message,
+        );
+      }
+
+      await db
+        .update(jobs)
+        .set({
+          status: "succeeded",
+          progress: 100,
+          finishedAt: new Date(),
         })
-        .returning();
-      assetId = created.id;
+        .where(eq(jobs.id, parsed.job_id));
+
+      broadcastJobEvent(parsed.job_id, parsed);
+      return;
+    }
+
+    let assetId: string | undefined;
+    if (shouldCreateAsset(output)) {
+      const [existingAsset] = await db
+        .select()
+        .from(assets)
+        .where(eq(assets.storageKey, output.storage_key))
+        .limit(1);
+
+      assetId = existingAsset?.id;
+      if (!assetId) {
+        const [created] = await db
+          .insert(assets)
+          .values({
+            kind: inferAssetKind(output.mime_type),
+            mimeType: output.mime_type,
+            storageKey: output.storage_key,
+            sizeBytes: output.size_bytes,
+            width: output.width,
+            height: output.height,
+            sha256: output.sha256,
+            source: "generated",
+          })
+          .returning();
+        assetId = created.id;
+      }
     }
 
     await db
@@ -86,32 +140,67 @@ export async function handleJobEvent(raw: string): Promise<void> {
       })
       .where(eq(jobs.id, parsed.job_id));
 
-    // ── Canvas hook: if this job was triggered by a canvas node, update it ──
-    const [job] = await db
-      .select({ inputSnapshot: jobs.inputSnapshot })
-      .from(jobs)
-      .where(eq(jobs.id, parsed.job_id))
-      .limit(1);
-
-    const canvasMeta = (job?.inputSnapshot as Record<string, unknown> | undefined)
-      ?._canvas as { canvas_id?: string; node_id?: string } | undefined;
-
     if (canvasMeta?.canvas_id && canvasMeta?.node_id && assetId) {
       try {
+        const snapshot = job?.inputSnapshot as Record<string, unknown> | undefined;
+
+        // ── Variant jobs: gather into a gallery; no cascade until picked ──
+        if (isVariantJob(snapshot)) {
+          const index = (snapshot?._variant as { index?: number })?.index ?? 0;
+          const entry: VariantEntry = { assetId, jobId: parsed.job_id, index };
+
+          // Read the current gallery + output, append, and (if this is the
+          // first variant) adopt it as the node's output so the node is
+          // usable immediately.
+          const [current] = await db
+            .select({ data: canvasNodes.data, outputAssetId: canvasNodes.outputAssetId })
+            .from(canvasNodes)
+            .where(and(eq(canvasNodes.canvasId, canvasMeta.canvas_id), eq(canvasNodes.id, canvasMeta.node_id)))
+            .limit(1);
+          const currentData = (current?.data as Record<string, unknown> | undefined) ?? {};
+          const gallery = appendVariant(
+            currentData.variants as VariantEntry[] | undefined,
+            entry,
+          );
+          await updateNodeDataField(canvasMeta.canvas_id, canvasMeta.node_id, "variants", gallery);
+
+          if (!current?.outputAssetId) {
+            await setNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done", assetId);
+          }
+          // Broadcast the freshly-appended gallery so clients update live.
+          broadcastNodeStatus(
+            canvasMeta.canvas_id,
+            canvasMeta.node_id,
+            "done",
+            current?.outputAssetId ?? assetId,
+            parsed.job_id,
+            gallery,
+          );
+        } else {
         await setNodeStatus(
           canvasMeta.canvas_id,
           canvasMeta.node_id,
           "done",
           assetId,
         );
+        broadcastNodeStatus(
+          canvasMeta.canvas_id,
+          canvasMeta.node_id,
+          "done",
+          assetId,
+          parsed.job_id,
+        );
         await markDownstreamDirty(canvasMeta.canvas_id, canvasMeta.node_id);
 
         // ── Character three-view: update frontAssetId/sideAssetId/backAssetId ──
-        const snapshot = job?.inputSnapshot as Record<string, unknown> | undefined;
         const view = snapshot?._character_view as string | undefined;
         if (view === "front" || view === "side" || view === "back") {
           const field = `${view}AssetId` as "frontAssetId" | "sideAssetId" | "backAssetId";
           await updateNodeDataField(canvasMeta.canvas_id, canvasMeta.node_id, field, assetId);
+        }
+
+        // ── Reactive cascade: re-run dirty descendants now ready ──
+        await runReadyDirtyChildren(canvasMeta.canvas_id, canvasMeta.node_id);
         }
       } catch (err) {
         console.error(
@@ -146,6 +235,13 @@ export async function handleJobEvent(raw: string): Promise<void> {
     if (canvasMeta?.canvas_id && canvasMeta?.node_id) {
       try {
         await setNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "failed");
+        broadcastNodeStatus(
+          canvasMeta.canvas_id,
+          canvasMeta.node_id,
+          "failed",
+          null,
+          parsed.job_id,
+        );
       } catch (err) {
         console.error(
           `[canvas hook] Failed to mark node ${canvasMeta.node_id} as failed:`,

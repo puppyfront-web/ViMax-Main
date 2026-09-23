@@ -102,6 +102,7 @@ export const canvasNodeTypeEnum = pgEnum("canvas_node_type", [
   "image",
   "video",
   "concat",
+  "audio",
 ]);
 
 export const canvasNodeStatusEnum = pgEnum("canvas_node_status", [

@@ -5,7 +5,9 @@ import { getDb } from "../../infrastructure/db/client.js";
 import { assets, jobs } from "../../infrastructure/db/schema.js";
 import type { Asset } from "../../infrastructure/db/schema.js";
 
-function stableStringify(value: unknown): string {
+/** Deterministic JSON-ish serialization: sorted object keys so identical
+ * content always produces the same string (and thus the same hash). */
+export function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableStringify).join(",")}]`;
   }
@@ -35,7 +37,12 @@ export function buildImageCacheKey(input: {
   return createHash("sha256").update(stableStringify(canonical)).digest("hex");
 }
 
-export async function findCachedImageJob(cacheKey: string) {
+/**
+ * Find the most recent succeeded job for a cache key. Generic across job
+ * types — image, video and concat executors all share it to short-circuit
+ * identical re-runs.
+ */
+export async function findCachedJob(cacheKey: string) {
   const db = getDb();
   const [hit] = await db
     .select()

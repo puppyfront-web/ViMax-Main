@@ -1,6 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
 
-const ACCESS_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
+const ACCESS_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REFRESH_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 interface JwtPayload {

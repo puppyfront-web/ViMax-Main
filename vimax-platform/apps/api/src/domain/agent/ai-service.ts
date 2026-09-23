@@ -25,6 +25,47 @@ export interface AIModelConfig {
   supportsStreaming?: boolean;
 }
 
+// ── Fetch with retry (transient provider/network errors) ───────────
+// AI providers (and the network to them) occasionally drop a connection
+// or return 5xx/429. Retrying these — but never 4xx client errors — keeps
+// the agent pipeline from aborting on a single flaky call.
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  attempts = 3,
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.status >= 500 || res.status === 429) {
+        throw new Error(`AI provider responded ${res.status}`);
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("AI fetch failed");
+}
+
+// ── Request timeout ─────────────────────────────────────────────────
+// Without a deadline a stalled provider (connected but silent) would keep
+// a chat turn pending forever — the assistant message stays "streaming"
+// and the agent loop never advances.
+
+const GENERATE_TIMEOUT_MS = 120_000;
+const STREAM_TIMEOUT_MS = 300_000;
+
+function withTimeout(abortSignal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
+}
+
 // ── AI Text Generation ──────────────────────────────────────────────
 
 export interface AITextRequest {
@@ -81,6 +122,86 @@ export interface AIStreamChunk {
   thinkDurationMs?: number;
 }
 
+// ── OpenAI-compatible stream accumulator ────────────────────────────
+// Tool-call arguments arrive fragmented across many SSE chunks (each
+// carries a partial `arguments` string keyed by `index`). Accumulating
+// them by index and assembling at stream end is the only correct way —
+// parsing each chunk independently throws away every call. Extracted as
+// a pure class so the fragmentation logic is unit-testable.
+
+interface PendingToolCall {
+  index: number;
+  id?: string;
+  name?: string;
+  args: string;
+}
+
+export class OpenAiStreamAccumulator {
+  private pending = new Map<number, PendingToolCall>();
+  private thinkingStart = 0;
+
+  /** Process one streamed choice; returns immediate text/thinking chunks. */
+  feedChoice(choice: {
+    delta?: {
+      content?: string;
+      reasoning_content?: string;
+      tool_calls?: Array<Record<string, unknown>>;
+    };
+    finish_reason?: string | null;
+  }): AIStreamChunk[] {
+    const out: AIStreamChunk[] = [];
+    const delta = choice.delta;
+
+    if (delta?.reasoning_content) {
+      if (!this.thinkingStart) {
+        this.thinkingStart = Date.now();
+        out.push({ type: "thinking-start" });
+      }
+      out.push({ type: "thinking-delta", thinking: delta.reasoning_content });
+    }
+    if (delta?.content) {
+      out.push({ type: "text-delta", text: delta.content });
+    }
+    if (delta?.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const idx = (tc.index as number) ?? 0;
+        const fn = tc.function as Record<string, unknown> | undefined;
+        let entry = this.pending.get(idx);
+        if (!entry) {
+          entry = { index: idx, args: "" };
+          this.pending.set(idx, entry);
+        }
+        if (fn?.name) entry.name = fn.name as string;
+        if (tc.id) entry.id = tc.id as string;
+        if (typeof fn?.arguments === "string") entry.args += fn.arguments;
+      }
+    }
+    if (choice.finish_reason && this.thinkingStart) {
+      out.push({ type: "thinking-end", thinkDurationMs: Date.now() - this.thinkingStart });
+      this.thinkingStart = 0;
+    }
+    return out;
+  }
+
+  /** Assemble accumulated tool calls (call at stream end / [DONE]). */
+  flush(): AIStreamChunk[] {
+    const out: AIStreamChunk[] = [];
+    const entries = [...this.pending.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [, entry] of entries) {
+      if (!entry.name) continue;
+      let args: Record<string, unknown> = {};
+      try {
+        args = entry.args.trim() ? JSON.parse(entry.args) : {};
+      } catch {
+        // Malformed accumulated arguments — best-effort empty payload.
+      }
+      out.push({ type: "tool-call", toolName: entry.name, toolArgs: args });
+    }
+    this.pending.clear();
+    return out;
+  }
+}
+
 // ── AI Service ──────────────────────────────────────────────────────
 
 /**
@@ -96,14 +217,14 @@ export async function generateText(request: AITextRequest): Promise<AITextRespon
   const messages = buildMessages(request);
   const body = buildRequestBody(request, messages, false, config);
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchWithRetry(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: request.abortSignal,
+    signal: withTimeout(request.abortSignal, GENERATE_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -142,14 +263,14 @@ export async function* streamText(
   const messages = buildMessages(request);
   const body = buildRequestBody(request, messages, true, config);
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchWithRetry(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: request.abortSignal,
+    signal: withTimeout(request.abortSignal, STREAM_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -166,7 +287,7 @@ export async function* streamText(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let thinkingStartTime = 0;
+  const acc = new OpenAiStreamAccumulator();
 
   try {
     while (true) {
@@ -183,6 +304,7 @@ export async function* streamText(
 
         const data = trimmed.slice(6);
         if (data === "[DONE]") {
+          for (const chunk of acc.flush()) yield chunk;
           yield { type: "done" };
           return;
         }
@@ -191,57 +313,14 @@ export async function* streamText(
           const parsed = JSON.parse(data) as Record<string, unknown>;
           const choice = (parsed.choices as Array<Record<string, unknown>>)?.[0];
           if (!choice) continue;
-
-          const delta = choice.delta as Record<string, unknown> | undefined;
-          if (!delta) continue;
-
-          // Thinking/reasoning content
-          if (delta.reasoning_content) {
-            if (!thinkingStartTime) {
-              thinkingStartTime = Date.now();
-              yield { type: "thinking-start" };
-            }
-            yield { type: "thinking-delta", thinking: delta.reasoning_content as string };
-          }
-
-          // Finish reason
-          if (choice.finish_reason) {
-            if (thinkingStartTime) {
-              yield {
-                type: "thinking-end",
-                thinkDurationMs: Date.now() - thinkingStartTime,
-              };
-            }
-          }
-
-          // Text content
-          if (delta.content) {
-            yield { type: "text-delta", text: delta.content as string };
-          }
-
-          // Tool calls
-          if (delta.tool_calls) {
-            const toolCalls = delta.tool_calls as Array<Record<string, unknown>>;
-            for (const tc of toolCalls) {
-              const fn = tc.function as Record<string, unknown> | undefined;
-              if (fn) {
-                try {
-                  yield {
-                    type: "tool-call",
-                    toolName: fn.name as string,
-                    toolArgs: JSON.parse((fn.arguments as string) ?? "{}"),
-                  };
-                } catch {
-                  // Partial JSON in streaming, skip
-                }
-              }
-            }
-          }
+          for (const chunk of acc.feedChoice(choice)) yield chunk;
         } catch {
           // Skip malformed JSON chunks
         }
       }
     }
+    // Stream ended without an explicit [DONE] — flush anyway.
+    for (const chunk of acc.flush()) yield chunk;
   } finally {
     reader.releaseLock();
   }
@@ -265,7 +344,7 @@ function buildRequestBody(
 ): Record<string, unknown> {
   const modelId = request.model?.includes(":")
     ? request.model!.split(":").slice(1).join(":")
-    : request.model ?? config?.models[0]?.id ?? "default";
+    : config?.models[0]?.id ?? request.model ?? "default";
 
   const body: Record<string, unknown> = {
     model: modelId,

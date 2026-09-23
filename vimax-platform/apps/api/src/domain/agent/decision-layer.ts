@@ -4,13 +4,13 @@
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { streamText, generateText, type AIStreamChunk } from "./ai-service.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { canvases, canvasNodes, canvasEdges } from "../../infrastructure/db/schema.js";
+import { autoWireCanvas } from "../canvas/canvas.service.js";
 import type { CanvasMutation } from "@vimax/contracts";
 import { getDefaultModel } from "../model/model.service.js";
-import { config } from "../../config/env.js";
 
 // ── Tool Definitions ────────────────────────────────────────────────
 
@@ -62,33 +62,60 @@ export const AGENT_TOOLS = {
   },
 } as const;
 
-// ── Zone Layout (mirrors frontend InfiniteCanvas.tsx) ───────────────
+// ── Zone Layout (mirrors frontend dagre-layout.ts) ──────────────────
+// Seven columns left → right, one per node type. Nodes stack vertically
+// inside their column with a row height exceeding the tallest node, so
+// generated nodes never overlap.
 
 const ZONE_LAYOUT: Record<string, { x: number; y: number }> = {
   script: { x: 40, y: 60 },
-  character: { x: 40, y: 300 },
-  storyboard_cell: { x: 360, y: 60 },
-  shot: { x: 680, y: 160 },
-  image: { x: 1020, y: 60 },
-  video: { x: 1360, y: 160 },
-  concat: { x: 1020, y: 420 },
+  character: { x: 380, y: 60 },
+  storyboard_cell: { x: 720, y: 60 },
+  shot: { x: 1060, y: 60 },
+  image: { x: 1400, y: 60 },
+  video: { x: 1740, y: 60 },
+  concat: { x: 2080, y: 60 },
 };
 
-const ZONE_OFFSET = 280;
+const ZONE_TITLE_HEIGHT = 36;
+const ZONE_ROW_HEIGHT = 240;
 
-/** Compute position for a new node of the given type, stacking within its zone */
+/** Compute position for a new node of the given type, stacking vertically
+ * inside its zone column with no overlap. */
 function computeNodePosition(
   nodeType: string,
   existingCount: number,
 ): { x: number; y: number } {
   const base = ZONE_LAYOUT[nodeType] ?? { x: 100, y: 100 };
-  // Stack same-type nodes vertically, 3 per row then wrap
-  const col = Math.floor(existingCount / 3);
-  const row = existingCount % 3;
   return {
-    x: base.x + col * 20,
-    y: base.y + row * ZONE_OFFSET,
+    x: base.x + 16,
+    y: base.y + ZONE_TITLE_HEIGHT + existingCount * ZONE_ROW_HEIGHT,
   };
+}
+
+// ── Node Data Normalization ──────────────────────────────────────────
+
+/**
+ * Models occasionally ignore the `data: object` schema and pass a plain
+ * string (e.g. "镜头2：…"). Storing that raw would corrupt the node —
+ * downstream editors spread it into {"0":"镜","1":"头",…}. Coerce every
+ * payload into a valid object, mapping the string into the field the node
+ * type actually reads.
+ */
+export function normalizeNodeData(type: string, data: unknown): Record<string, unknown> {
+  if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+    return data as Record<string, unknown>;
+  }
+  const text = typeof data === "string" ? data.trim() : "";
+  if (!text) return {};
+  switch (type) {
+    case "script": return { content: text, status: "idle" };
+    case "storyboard_cell": return { shotBrief: text, status: "idle" };
+    case "shot": return { ffDesc: text, status: "idle" };
+    case "image": return { prompt: text, status: "idle" };
+    case "character": return { description: text, status: "idle" };
+    default: return { note: text, status: "idle" };
+  }
 }
 
 // ── Canvas Context Builder ───────────────────────────────────────────
@@ -109,6 +136,27 @@ export interface CanvasContext {
     targetHandle?: string | null;
   }>;
   activeSkills: string[];
+}
+
+/**
+ * Latest script node's content on the canvas, so downstream tools
+ * (extract_characters, generate_storyboard) operate on the ACTUAL script
+ * text instead of a short instruction the model passes as `prompt`.
+ */
+async function getScriptContent(canvasId: string): Promise<string | null> {
+  try {
+    const db = getDb();
+    const rows = await db
+      .select({ data: canvasNodes.data })
+      .from(canvasNodes)
+      .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "script")))
+      .orderBy(desc(canvasNodes.createdAt))
+      .limit(1);
+    const content = (rows[0]?.data as Record<string, unknown> | undefined)?.content;
+    return typeof content === "string" && content.trim() ? content : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function buildCanvasContext(canvasId: string): Promise<CanvasContext | null> {
@@ -212,6 +260,7 @@ export async function runDecisionAgent(
   userMessage: string,
   onChunk: (chunk: AIStreamChunk) => void,
   modelId?: string,
+  abortSignal?: AbortSignal,
 ): Promise<DecisionAgentResult> {
   // Build canvas context
   const ctx = await buildCanvasContext(canvasId);
@@ -251,9 +300,11 @@ export async function runDecisionAgent(
       ),
       temperature: 0.7,
       maxTokens: 4096,
+      abortSignal,
     });
 
     for await (const chunk of stream) {
+      if (abortSignal?.aborted) break;
       onChunk(chunk);
 
       if (chunk.type === "text-delta" && chunk.text) {
@@ -339,7 +390,7 @@ export async function executeToolCall(
           typeCounts[nodeType] = (typeCounts[nodeType] ?? 0) + 1;
           const position = n.position ?? computeNodePosition(nodeType, typeCounts[nodeType] - 1);
 
-          const nodeData = (n.data ?? {}) as Record<string, unknown>;
+          const nodeData = normalizeNodeData(nodeType, n.data);
 
           await db.insert(canvasNodes).values({
             id: nodeId,
@@ -360,6 +411,14 @@ export async function executeToolCall(
           nodes: mutationNodes,
         };
         onMutation?.(mutation);
+
+        // Auto-wire type-dependency edges across the canvas (script→cell→shot→
+        // image→video→concat) so generated nodes show up as a connected
+        // pipeline, not scattered cards.
+        const wiredEdges = await autoWireCanvas(canvasId);
+        if (wiredEdges.length > 0) {
+          onMutation?.({ type: "edges.add", edges: wiredEdges });
+        }
 
         const nodeList = mutationNodes.map((n) => `${n.type}(${n.id.slice(0, 8)}…)`).join(", ");
         return {
@@ -426,6 +485,12 @@ export async function executeToolCall(
         };
         onMutation?.(mutation);
 
+        // Wire the new script to existing storyboard/character nodes, if any.
+        const wiredEdges = await autoWireCanvas(canvasId);
+        if (wiredEdges.length > 0) {
+          onMutation?.({ type: "edges.add", edges: wiredEdges });
+        }
+
         return {
           success: true,
           result: { nodeId, contentLength: content.length },
@@ -444,7 +509,7 @@ export async function executeToolCall(
     // ── generate_storyboard ──────────────────────────────────────────
     case "generate_storyboard": {
       try {
-        const prompt = args.prompt as string;
+        const prompt = (await getScriptContent(canvasId)) ?? (args.prompt as string);
         const sbPrompt = `你是一位专业的分镜师。请根据以下描述生成分镜表。
 
 要求：
@@ -524,6 +589,10 @@ export async function executeToolCall(
           : undefined;
         if (mutation) onMutation?.(mutation);
 
+        // Wire storyboard cells to the script node and any existing shots.
+        const wiredEdges = await autoWireCanvas(canvasId);
+        if (wiredEdges.length > 0) onMutation?.({ type: "edges.add", edges: wiredEdges });
+
         return {
           success: true,
           result: { shotCount: mutationNodes.length },
@@ -542,7 +611,7 @@ export async function executeToolCall(
     // ── extract_characters ───────────────────────────────────────────
     case "extract_characters": {
       try {
-        const prompt = args.prompt as string;
+        const prompt = (await getScriptContent(canvasId)) ?? (args.prompt as string);
         const charPrompt = `从以下文本中提取所有角色信息。
 
 输入文本: ${prompt}
@@ -611,6 +680,10 @@ export async function executeToolCall(
           : undefined;
         if (mutation) onMutation?.(mutation);
 
+        // Wire characters to the script node and any existing shots.
+        const wiredEdges = await autoWireCanvas(canvasId);
+        if (wiredEdges.length > 0) onMutation?.({ type: "edges.add", edges: wiredEdges });
+
         return {
           success: true,
           result: { characterCount: mutationNodes.length },
@@ -629,50 +702,52 @@ export async function executeToolCall(
     // ── generate_assets ──────────────────────────────────────────────
     case "generate_assets": {
       try {
-        // Dynamically import the queue producer to avoid circular deps
-        const { enqueueImageJob } = await import(
-          "../../infrastructure/queue/producer.js"
-        );
         const prompt = args.prompt as string;
-
-        // Resolve model config from DB (user-configured API key), fallback to env
         const defaultModel = await getDefaultModel("default", "image");
-        const modelCfg = defaultModel.config as Record<string, unknown>;
-        const classPath = (defaultModel.classPath ?? modelCfg.class_path ?? (modelCfg.init_args as Record<string,string>)?.class_path) as string;
-        const baseUrl = (defaultModel.baseUrl ?? modelCfg.base_url ?? (modelCfg.init_args as Record<string,string>)?.base_url) as string | undefined;
-        const model = (defaultModel.vendorModelId ?? (modelCfg.init_args as Record<string,string>)?.model) as string | undefined;
-        const apiKey = defaultModel.apiKey ?? config.arkApiKey();
-        if (!apiKey) throw new Error("No API key configured for image generation");
+        const nodeId = randomUUID();
+        typeCounts["image"] = (typeCounts["image"] ?? 0) + 1;
+        const position = computeNodePosition("image", typeCounts["image"] - 1);
+        const now = new Date();
 
-        // Enqueue an image generation job for the asset
-        const jobId = randomUUID();
-        await enqueueImageJob({
-          job_id: jobId,
-          job_type: "image.t2i",
-          model_id: defaultModel.id,
-          credential: {
-            class_path: classPath,
-            api_key: apiKey,
-            base_url: baseUrl,
-            model: model,
-          },
-          input: {
+        await db.insert(canvasNodes).values({
+          id: nodeId,
+          canvasId,
+          type: "image",
+          position,
+          data: {
             prompt,
-            size: "1024x1024" as const,
+            modelId: defaultModel.id,
+            size: "1024x1024",
+            status: "idle",
           },
-          callback: {
-            event_channel: `events:job:${jobId}`,
-            upload_bucket: "vimax-assets",
-            upload_prefix: `agent/${jobId}`,
-          },
-          cache_key: `agent_asset_${jobId}`,
-          timeout_ms: 120000,
+          status: "idle",
+          createdAt: now,
+          updatedAt: now,
         });
+
+        const mutation: CanvasMutation = {
+          type: "nodes.add",
+          nodes: [{
+            id: nodeId,
+            type: "image",
+            position,
+            data: { prompt, modelId: defaultModel.id, size: "1024x1024", status: "running" },
+          }],
+        };
+        onMutation?.(mutation);
+
+        // Wire the image node to any existing shots (shot→image).
+        const wiredEdges = await autoWireCanvas(canvasId);
+        if (wiredEdges.length > 0) onMutation?.({ type: "edges.add", edges: wiredEdges });
+
+        const { runNode } = await import("../canvas/node-executor.service.js");
+        const result = await runNode({ canvas_id: canvasId, node_id: nodeId });
 
         return {
           success: true,
-          result: { jobId, prompt },
-          message: `资产生成已提交（任务ID: ${jobId.slice(0, 8)}…）`,
+          result: { jobId: result.job_id, nodeId, prompt },
+          message: `资产生成已提交，画布已创建图片节点`,
+          canvasMutation: mutation,
         };
       } catch (err) {
         return {

@@ -1,4 +1,4 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import {
   AssetConfirmUploadSchema,
   AssetUploadRequestSchema,
@@ -16,8 +16,7 @@ import { getJobWithOutputUrl } from "../../domain/job/job-event.service.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { assets, jobs } from "../../infrastructure/db/schema.js";
 import { createPresignedDownloadUrl } from "../../infrastructure/storage/s3.js";
-
-const t = initTRPC.create();
+import { protectedProcedure, router } from "../trpc.js";
 
 function mapError(err: unknown): never {
   const message = err instanceof Error ? err.message : "internal";
@@ -32,8 +31,8 @@ function mapError(err: unknown): never {
   });
 }
 
-export const imageRouter = t.router({
-  generate: t.procedure.input(ImageGenerateInputSchema).mutation(async ({ input }) => {
+export const imageRouter = router({
+  generate: protectedProcedure.input(ImageGenerateInputSchema).mutation(async ({ input }) => {
     try {
       return await generateImage(input);
     } catch (err) {
@@ -41,7 +40,7 @@ export const imageRouter = t.router({
     }
   }),
 
-  getJob: t.procedure
+  getJob: protectedProcedure
     .input(z.object({ job_id: z.string().uuid() }))
     .query(async ({ input }) => {
       const result = await getJobWithOutputUrl(input.job_id);
@@ -74,7 +73,7 @@ export const imageRouter = t.router({
       };
     }),
 
-  listHistory: t.procedure
+  listHistory: protectedProcedure
     .input(
       z
         .object({
@@ -144,12 +143,12 @@ export const imageRouter = t.router({
     }),
 });
 
-export const assetRouter = t.router({
-  requestUpload: t.procedure.input(AssetUploadRequestSchema).mutation(async ({ input }) => {
+export const assetRouter = router({
+  requestUpload: protectedProcedure.input(AssetUploadRequestSchema).mutation(async ({ input }) => {
     return requestAssetUpload(input);
   }),
 
-  confirmUpload: t.procedure.input(AssetConfirmUploadSchema).mutation(async ({ input }) => {
+  confirmUpload: protectedProcedure.input(AssetConfirmUploadSchema).mutation(async ({ input }) => {
     try {
       return await confirmAssetUpload(input);
     } catch (err) {
@@ -157,7 +156,7 @@ export const assetRouter = t.router({
     }
   }),
 
-  getDownloadUrl: t.procedure
+  getDownloadUrl: protectedProcedure
     .input(z.object({ asset_id: z.string().uuid() }))
     .query(async ({ input }) => {
       try {
@@ -169,7 +168,7 @@ export const assetRouter = t.router({
 
   // ── Asset Library (资源库) ──────────────────────────────────────
 
-  listAssets: t.procedure
+  listAssets: protectedProcedure
     .input(
       z.object({
         kind: z.enum(["image", "video", "audio"]).optional(),

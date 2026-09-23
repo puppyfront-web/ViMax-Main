@@ -1,4 +1,4 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   CreateModelInputSchema,
@@ -14,14 +14,13 @@ import {
   deleteModel,
   getDefaultModel,
 } from "../../domain/model/model.service.js";
+import { publicProcedure, protectedProcedure, router } from "../trpc.js";
 
-const t = initTRPC.create();
-
-export const modelRouter = t.router({
+export const modelRouter = router({
   /**
    * List all enabled models, optionally filtered by type.
    */
-  list: t.procedure
+  list: publicProcedure
     .input(ListModelsInputSchema.optional())
     .query(async ({ input }) => {
       const tenantId = input?.tenantId ?? "default";
@@ -32,7 +31,7 @@ export const modelRouter = t.router({
   /**
    * Get a single model by ID.
    */
-  get: t.procedure
+  get: publicProcedure
     .input(z.object({ id: z.string().uuid() }))
     .query(async ({ input }) => {
       const model = await getModelById(input.id);
@@ -45,7 +44,7 @@ export const modelRouter = t.router({
   /**
    * Get the default model for a given type.
    */
-  getDefault: t.procedure
+  getDefault: publicProcedure
     .input(z.object({ type: z.enum(["text", "image", "video", "tts", "embedding"]) }))
     .query(async ({ input }) => {
       return getDefaultModel("default", input.type);
@@ -54,7 +53,7 @@ export const modelRouter = t.router({
   /**
    * Create a new model configuration.
    */
-  create: t.procedure
+  create: protectedProcedure
     .input(CreateModelInputSchema)
     .mutation(async ({ input }) => {
       try {
@@ -70,7 +69,7 @@ export const modelRouter = t.router({
   /**
    * Update an existing model configuration.
    */
-  update: t.procedure
+  update: protectedProcedure
     .input(UpdateModelInputSchema)
     .mutation(async ({ input }) => {
       const { id, ...data } = input;
@@ -84,7 +83,7 @@ export const modelRouter = t.router({
   /**
    * Delete a model configuration.
    */
-  delete: t.procedure
+  delete: protectedProcedure
     .input(DeleteModelInputSchema)
     .mutation(async ({ input }) => {
       await deleteModel(input.id);

@@ -1,4 +1,4 @@
-import { initTRPC } from "@trpc/server";
+import { publicProcedure, protectedProcedure, router } from "../trpc.js";
 import { z } from "zod";
 import {
   getAllVendors,
@@ -13,13 +13,11 @@ import {
   getSkill,
 } from "../../domain/skill/skill-registry.js";
 
-const t = initTRPC.create();
-
-export const vendorRouter = t.router({
+export const vendorRouter = router({
   /**
    * List all registered vendors.
    */
-  list: t.procedure.query(() => {
+  list: publicProcedure.query(() => {
     const vendors = getAllVendors();
     return {
       items: vendors.map((v) => ({
@@ -36,7 +34,7 @@ export const vendorRouter = t.router({
   /**
    * List all available models across all vendors.
    */
-  listModels: t.procedure.query(() => {
+  listModels: publicProcedure.query(() => {
     const models = getAllModels();
     return {
       items: models.map((m) => ({
@@ -54,17 +52,17 @@ export const vendorRouter = t.router({
   /**
    * Reload vendor plugins from disk (hot reload).
    */
-  reload: t.procedure.mutation(() => {
+  reload: protectedProcedure.mutation(() => {
     const count = reloadVendors();
     return { ok: true, vendorCount: count };
   }),
 });
 
-export const skillRouter = t.router({
+export const skillRouter = router({
   /**
    * List all skills, optionally filtered by type.
    */
-  list: t.procedure
+  list: publicProcedure
     .input(z.object({ type: z.enum(["art", "story"]).optional() }))
     .query(({ input }) => {
       const skills = input.type ? getSkills(input.type) : getSkills();
@@ -82,7 +80,7 @@ export const skillRouter = t.router({
   /**
    * Get detailed skill info.
    */
-  get: t.procedure
+  get: publicProcedure
     .input(z.object({ id: z.string() }))
     .query(({ input }) => {
       const skill = getSkill(input.id);

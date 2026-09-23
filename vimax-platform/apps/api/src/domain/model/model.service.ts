@@ -121,7 +121,13 @@ export async function getModels(tenantId: string, type?: string): Promise<ModelD
   return rows.map(rowToDescriptor);
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getModelById(id: string): Promise<ModelDescriptor | null> {
+  // Preset ids (e.g. "doubao-seedance-1-0-lite") resolve through the
+  // contracts presets, not the DB — a non-UUID here must be a clean miss,
+  // not a Postgres uuid-cast error.
+  if (!UUID_RE.test(id)) return null;
   const db = getDb();
   const rows = await db
     .select()

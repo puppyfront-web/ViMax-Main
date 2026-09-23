@@ -6,7 +6,7 @@ import { config } from "../../config/env.js";
 import {
   buildImageCacheKey,
   collectReferenceSha256s,
-  findCachedImageJob,
+  findCachedJob,
 } from "./cache.service.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { jobEvents, jobs } from "../../infrastructure/db/schema.js";
@@ -34,7 +34,7 @@ export async function generateImage(input: ImageGenerateInput): Promise<ImageGen
   });
 
   if (!input.force) {
-    const cached = await findCachedImageJob(cacheKey);
+    const cached = await findCachedJob(cacheKey);
     if (cached?.outputAssetId) {
       const db = getDb();
       await db.insert(jobEvents).values({

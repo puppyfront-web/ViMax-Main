@@ -1,11 +1,10 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as authService from "../../domain/auth/auth.service.js";
+import { publicProcedure, router } from "../trpc.js";
 
-const t = initTRPC.create();
-
-export const authRouter = t.router({
-  register: t.procedure
+export const authRouter = router({
+  register: publicProcedure
     .input(
       z.object({
         email: z.string().email(),
@@ -18,7 +17,7 @@ export const authRouter = t.router({
       return result;
     }),
 
-  login: t.procedure
+  login: publicProcedure
     .input(
       z.object({
         email: z.string().email(),
@@ -30,7 +29,7 @@ export const authRouter = t.router({
       return result;
     }),
 
-  refresh: t.procedure
+  refresh: publicProcedure
     .input(
       z.object({
         refreshToken: z.string().min(1),
@@ -41,7 +40,7 @@ export const authRouter = t.router({
       return tokens;
     }),
 
-  logout: t.procedure
+  logout: publicProcedure
     .input(
       z.object({
         refreshToken: z.string().min(1),
@@ -52,7 +51,7 @@ export const authRouter = t.router({
       return { ok: true };
     }),
 
-  me: t.procedure
+  me: publicProcedure
     .input(
       z.object({
         accessToken: z.string().min(1),

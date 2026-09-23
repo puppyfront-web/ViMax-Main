@@ -9,6 +9,8 @@ import type { ServerWsMessage } from "@vimax/contracts";
 interface ManagedConnection {
   ws: WebSocket;
   canvasId: string | null;
+  /** Authenticated user id, bound at WS upgrade time. */
+  userId: string;
   subscribedConversations: Set<string>; // conversationIds this conn is tracking
 }
 
@@ -17,12 +19,18 @@ const connections = new Map<WebSocket, ManagedConnection>();
 /**
  * Register a new WebSocket connection.
  */
-export function addConnection(ws: WebSocket): void {
+export function addConnection(ws: WebSocket, userId: string): void {
   connections.set(ws, {
     ws,
     canvasId: null,
+    userId,
     subscribedConversations: new Set(),
   });
+}
+
+/** The authenticated user id bound to this connection at upgrade time. */
+export function getUserId(ws: WebSocket): string | null {
+  return connections.get(ws)?.userId ?? null;
 }
 
 /**
@@ -78,6 +86,27 @@ export function broadcastToRoom(
   const payload = JSON.stringify(message);
   for (const conn of connections.values()) {
     if (conn.canvasId === canvasId && conn.ws.readyState === 1) {
+      conn.ws.send(payload);
+    }
+  }
+}
+
+/**
+ * Broadcast a message to all connections in a canvas room except the
+ * sender — used for presence relay so clients never see their own cursor.
+ */
+export function broadcastToRoomExcept(
+  canvasId: string,
+  except: WebSocket,
+  message: ServerWsMessage,
+): void {
+  const payload = JSON.stringify(message);
+  for (const conn of connections.values()) {
+    if (
+      conn.ws !== except &&
+      conn.canvasId === canvasId &&
+      conn.ws.readyState === 1
+    ) {
       conn.ws.send(payload);
     }
   }

@@ -1,10 +1,17 @@
-import { and, count, desc, eq, lt } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, count, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb } from "../../infrastructure/db/client.js";
 import {
   canvasEdges,
   canvasNodes,
   canvases,
 } from "../../infrastructure/db/schema.js";
+import {
+  collectDownstreamNodeIds,
+  diffIds,
+  inferAutoEdges,
+  subtractEdges,
+} from "./canvas-graph.js";
 import type {
   CanvasCreateInput,
   CanvasCreateOutput,
@@ -147,81 +154,176 @@ export async function getCanvasSnapshot(
   };
 }
 
-// ── Save (batch replace nodes + edges) ─────────────────────────────
+// ── Save (incremental upsert of nodes + edges) ────────────────────
+//
+// Preserves each node's runtime `status` and `output_asset_id`: only the
+// structural fields (`type`, `position`, `data`) are overwritten on
+// conflict. A full replace here would wipe every generated result the
+// moment a user drags a node — which is why this is an upsert.
 
 export async function saveCanvas(input: CanvasSaveInput): Promise<{ ok: true }> {
   const db = getDb();
 
+  // Postgres rejects ON CONFLICT DO UPDATE when one command carries the same
+  // key twice, so collapse duplicate ids first (last occurrence = latest
+  // client state wins).
+  const nodesById = new Map(input.nodes.map((n) => [n.id, n]));
+  const edgesById = new Map(input.edges.map((e) => [e.id, e]));
+  const nodes = [...nodesById.values()];
+  const edges = [...edgesById.values()];
+
   await db.transaction(async (tx) => {
-    // 1. Remove edges and nodes not in the incoming set
-    const incomingNodeIds = new Set(input.nodes.map((n) => n.id));
-    const incomingEdgeIds = new Set(input.edges.map((e) => e.id));
-
-    // Delete removed edges first (FK to nodes)
-    await tx.delete(canvasEdges).where(
-      and(
-        eq(canvasEdges.canvasId, input.canvas_id),
-        // Only delete edges NOT in the incoming list
-        ...(incomingEdgeIds.size > 0
-          ? [] // We'll delete all and re-insert — simpler
-          : []),
-      ),
-    );
-
-    // Actually, full replace is simpler and more robust:
-    // Delete all existing edges and nodes, then re-insert
-    await tx
-      .delete(canvasEdges)
+    // 1. Snapshot current ids so we can compute what to delete.
+    const existingNodes = await tx
+      .select({ id: canvasNodes.id })
+      .from(canvasNodes)
+      .where(eq(canvasNodes.canvasId, input.canvas_id));
+    const existingEdges = await tx
+      .select({ id: canvasEdges.id })
+      .from(canvasEdges)
       .where(eq(canvasEdges.canvasId, input.canvas_id));
 
-    await tx
-      .delete(canvasNodes)
-      .where(eq(canvasNodes.canvasId, input.canvas_id));
+    const deleteNodeIds = diffIds(
+      existingNodes.map((n) => n.id),
+      nodes.map((n) => n.id),
+    );
+    const deleteEdgeIds = diffIds(
+      existingEdges.map((e) => e.id),
+      edges.map((e) => e.id),
+    );
 
-    // 2. Insert new nodes
-    if (input.nodes.length > 0) {
-      await tx.insert(canvasNodes).values(
-        input.nodes.map((n) => ({
-          id: n.id,
-          canvasId: input.canvas_id,
-          type: n.type,
-          position: n.position,
-          data: n.data,
-          status: "idle" as const,
-        })),
-      );
+    // 2. Remove dropped nodes (their edges cascade) and dropped edges.
+    if (deleteNodeIds.length > 0) {
+      await tx
+        .delete(canvasNodes)
+        .where(inArray(canvasNodes.id, deleteNodeIds));
+    }
+    if (deleteEdgeIds.length > 0) {
+      await tx
+        .delete(canvasEdges)
+        .where(inArray(canvasEdges.id, deleteEdgeIds));
     }
 
-    // 3. Insert new edges (after nodes, due to FK)
-    if (input.edges.length > 0) {
-      await tx.insert(canvasEdges).values(
-        input.edges.map((e) => ({
-          id: e.id,
-          canvasId: input.canvas_id,
-          sourceNodeId: e.source_node_id,
-          targetNodeId: e.target_node_id,
-          sourceHandle: e.source_handle ?? null,
-          targetHandle: e.target_handle ?? null,
-        })),
-      );
+    // 3. Upsert nodes — status & outputAssetId are intentionally NOT in
+    //    the conflict set so existing results survive every save.
+    if (nodes.length > 0) {
+      await tx
+        .insert(canvasNodes)
+        .values(
+          nodes.map((n) => ({
+            id: n.id,
+            canvasId: input.canvas_id,
+            type: n.type,
+            position: n.position,
+            data: n.data,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: canvasNodes.id,
+          set: {
+            type: sql`excluded.type`,
+            position: sql`excluded.position`,
+            data: sql`excluded.data`,
+            updatedAt: sql`now()`,
+          },
+        });
     }
 
-    // 4. Update canvas metadata
-    const updateData: Partial<{ viewport: typeof canvases.$inferInsert["viewport"] }> =
-      {};
-    if (input.viewport) {
-      updateData.viewport = input.viewport;
+    // 4. Upsert edges (after nodes, to satisfy the FK on insert).
+    if (edges.length > 0) {
+      await tx
+        .insert(canvasEdges)
+        .values(
+          edges.map((e) => ({
+            id: e.id,
+            canvasId: input.canvas_id,
+            sourceNodeId: e.source_node_id,
+            targetNodeId: e.target_node_id,
+            sourceHandle: e.source_handle ?? null,
+            targetHandle: e.target_handle ?? null,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: canvasEdges.id,
+          set: {
+            sourceNodeId: sql`excluded.source_node_id`,
+            targetNodeId: sql`excluded.target_node_id`,
+            sourceHandle: sql`excluded.source_handle`,
+            targetHandle: sql`excluded.target_handle`,
+          },
+        });
     }
+
+    // 5. Bump canvas updatedAt (and viewport if provided).
     await tx
       .update(canvases)
       .set({
-        ...updateData,
+        ...(input.viewport ? { viewport: input.viewport } : {}),
         updatedAt: new Date(),
       })
       .where(eq(canvases.id, input.canvas_id));
   });
 
   return { ok: true };
+}
+
+// ── Auto-wire (persist missing type-dependency edges) ─────────────
+
+/**
+ * Infer type-dependency edges across the WHOLE canvas and persist the ones
+ * that don't exist yet. Called after the agent creates nodes so generated
+ * content lands as a connected pipeline (script → storyboard → shot → …)
+ * instead of scattered cards. Idempotent: existing edges are never touched.
+ * Returns the created edges in `edges.add` mutation shape for broadcast.
+ */
+export async function autoWireCanvas(
+  canvasId: string,
+): Promise<
+  Array<{
+    id: string;
+    source: string;
+    target: string;
+    sourceHandle?: string;
+    targetHandle?: string;
+  }>
+> {
+  const db = getDb();
+  const nodes = await db
+    .select({ id: canvasNodes.id, type: canvasNodes.type })
+    .from(canvasNodes)
+    .where(eq(canvasNodes.canvasId, canvasId));
+  const existing = await db
+    .select({
+      sourceNodeId: canvasEdges.sourceNodeId,
+      targetNodeId: canvasEdges.targetNodeId,
+      sourceHandle: canvasEdges.sourceHandle,
+      targetHandle: canvasEdges.targetHandle,
+    })
+    .from(canvasEdges)
+    .where(eq(canvasEdges.canvasId, canvasId));
+
+  const inferred = inferAutoEdges(nodes, randomUUID);
+  const fresh = subtractEdges(inferred, existing);
+  if (fresh.length === 0) return [];
+
+  await db.insert(canvasEdges).values(
+    fresh.map((e) => ({
+      id: e.id,
+      canvasId,
+      sourceNodeId: e.sourceNodeId,
+      targetNodeId: e.targetNodeId,
+      sourceHandle: e.sourceHandle,
+      targetHandle: e.targetHandle,
+    })),
+  );
+
+  return fresh.map((e) => ({
+    id: e.id,
+    source: e.sourceNodeId,
+    target: e.targetNodeId,
+    sourceHandle: e.sourceHandle ?? undefined,
+    targetHandle: e.targetHandle ?? undefined,
+  }));
 }
 
 // ── Delete canvas ──────────────────────────────────────────────────
@@ -337,67 +439,45 @@ export async function setNodeStatus(
 }
 
 // ── Helper: mark downstream nodes dirty ─────────────────────────────
+//
+// When a node's output changes, every result that depended on it is
+// stale. Only `done` nodes are flipped to `dirty` — an `idle` node had
+// no result to invalidate, and a `running`/`failed` node keeps its state.
 
 export async function markDownstreamDirty(
   canvasId: string,
   nodeId: string,
-) {
+): Promise<void> {
   const db = getDb();
 
-  // BFS from nodeId to find all downstream nodes
-  const visited = new Set<string>();
-  const queue = [nodeId];
+  const edges = await db
+    .select({
+      sourceNodeId: canvasEdges.sourceNodeId,
+      targetNodeId: canvasEdges.targetNodeId,
+    })
+    .from(canvasEdges)
+    .where(eq(canvasEdges.canvasId, canvasId));
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (visited.has(current)) continue;
-    visited.add(current);
+  const downstreamIds = collectDownstreamNodeIds(
+    edges.map((e) => ({
+      sourceNodeId: e.sourceNodeId,
+      targetNodeId: e.targetNodeId,
+    })),
+    nodeId,
+  );
 
-    // Find outgoing edges
-    const outgoing = await db
-      .select({ targetNodeId: canvasEdges.targetNodeId })
-      .from(canvasEdges)
-      .where(
-        and(
-          eq(canvasEdges.canvasId, canvasId),
-          eq(canvasEdges.sourceNodeId, current),
-        ),
-      );
+  if (downstreamIds.length === 0) return;
 
-    for (const edge of outgoing) {
-      if (!visited.has(edge.targetNodeId)) {
-        queue.push(edge.targetNodeId);
-      }
-    }
-  }
-
-  // Mark all downstream nodes (excluding the trigger node) as dirty
-  visited.delete(nodeId);
-  if (visited.size > 0) {
-    await db
-      .update(canvasNodes)
-      .set({ status: "dirty", updatedAt: new Date() })
-      .where(
-        and(
-          eq(canvasNodes.canvasId, canvasId),
-          // Mark nodes that are currently done or idle
-          // We use a raw condition approach — update all visited
-        ),
-      );
-
-    // Update one by one for visited nodes
-    for (const id of visited) {
-      await db
-        .update(canvasNodes)
-        .set({ status: "dirty", updatedAt: new Date() })
-        .where(
-          and(
-            eq(canvasNodes.canvasId, canvasId),
-            eq(canvasNodes.id, id),
-          ),
-        );
-    }
-  }
+  await db
+    .update(canvasNodes)
+    .set({ status: "dirty", updatedAt: new Date() })
+    .where(
+      and(
+        eq(canvasNodes.canvasId, canvasId),
+        inArray(canvasNodes.id, downstreamIds),
+        eq(canvasNodes.status, "done"),
+      ),
+    );
 }
 
 // ── Helper: update a single data field on a node ───────────────────

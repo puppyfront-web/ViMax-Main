@@ -1,9 +1,10 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb } from "../../infrastructure/db/client.js";
 import { workbenches } from "../../infrastructure/db/schema.js";
 import { eq } from "drizzle-orm";
 import { createDefaultTracks } from "@vimax/contracts";
+import { protectedProcedure, router } from "../trpc.js";
 
 // Inline fallback if not exported yet
 function getDefaultTracks(): Record<string, unknown>[] {
@@ -14,13 +15,11 @@ function getDefaultTracks(): Record<string, unknown>[] {
   }
 }
 
-const t = initTRPC.create();
-
-export const workbenchRouter = t.router({
+export const workbenchRouter = router({
   /**
    * Create a new workbench.
    */
-  create: t.procedure
+  create: protectedProcedure
     .input(z.object({
       canvasId: z.string().uuid().optional(),
       name: z.string().min(1).max(200),
@@ -55,7 +54,7 @@ export const workbenchRouter = t.router({
   /**
    * Get a workbench by ID.
    */
-  get: t.procedure
+  get: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .query(async ({ input }) => {
       const db = getDb();
@@ -87,7 +86,7 @@ export const workbenchRouter = t.router({
   /**
    * List workbenches for a canvas.
    */
-  list: t.procedure
+  list: protectedProcedure
     .input(z.object({ canvasId: z.string().uuid() }))
     .query(async ({ input }) => {
       const db = getDb();
@@ -111,7 +110,7 @@ export const workbenchRouter = t.router({
   /**
    * Update tracks in a workbench.
    */
-  updateTracks: t.procedure
+  updateTracks: protectedProcedure
     .input(z.object({
       workbenchId: z.string().uuid(),
       tracks: z.array(z.record(z.unknown())),
@@ -134,7 +133,7 @@ export const workbenchRouter = t.router({
   /**
    * Delete a workbench.
    */
-  delete: t.procedure
+  delete: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input }) => {
       const db = getDb();

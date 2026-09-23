@@ -1,9 +1,9 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import * as authService from "../domain/auth/auth.service.js";
 
-export interface TrpcContext {
+export type TrpcContext = {
   user: { id: string; email: string; name: string; avatarUrl: string | null } | null;
-}
+};
 
 export async function createContext(opts: {
   req: Request;

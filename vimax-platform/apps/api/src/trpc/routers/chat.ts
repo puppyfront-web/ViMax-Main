@@ -1,4 +1,4 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import {
   CreateConversationInputSchema,
   ListConversationsInputSchema,
@@ -16,8 +16,7 @@ import {
   paginateConversations,
   paginateMessages,
 } from "./chat-pagination.js";
-
-const t = initTRPC.create();
+import { protectedProcedure, router } from "../trpc.js";
 
 // ── Helper: map internal errors to tRPC errors ──────────────────────
 
@@ -31,11 +30,11 @@ function mapError(err: unknown): never {
 
 // ── Chat Router ─────────────────────────────────────────────────────
 
-export const chatRouter = t.router({
+export const chatRouter = router({
   /**
    * Create a new conversation for a canvas.
    */
-  createConversation: t.procedure
+  createConversation: protectedProcedure
     .input(CreateConversationInputSchema)
     .mutation(async ({ input }) => {
       try {
@@ -81,7 +80,7 @@ export const chatRouter = t.router({
   /**
    * List conversations for a canvas (cursor-based pagination).
    */
-  listConversations: t.procedure
+  listConversations: protectedProcedure
     .input(ListConversationsInputSchema)
     .query(async ({ input }) => {
       try {
@@ -116,7 +115,7 @@ export const chatRouter = t.router({
   /**
    * Get messages for a conversation (cursor-based pagination by message ID).
    */
-  getMessages: t.procedure
+  getMessages: protectedProcedure
     .input(GetMessagesInputSchema)
     .query(async ({ input }) => {
       try {
@@ -153,7 +152,7 @@ export const chatRouter = t.router({
   /**
    * Delete a conversation and all its messages.
    */
-  deleteConversation: t.procedure
+  deleteConversation: protectedProcedure
     .input(DeleteConversationInputSchema)
     .mutation(async ({ input }) => {
       try {

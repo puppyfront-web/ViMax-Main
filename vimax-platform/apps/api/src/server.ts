@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { config } from "./config/env.js";
 import { getDb } from "./infrastructure/db/client.js";
-import { startBridgeWorker, startVideoBridgeWorker } from "./infrastructure/queue/bullmq.js";
+import { startAllBridgeWorkers } from "./infrastructure/queue/bullmq.js";
 import { startJobEventConsumer } from "./infrastructure/pubsub/consumer.js";
 import { jobSseHandler } from "./realtime/job-sse.route.js";
 import { createWebSocketServer, handleUpgrade } from "./realtime/websocket.js";
@@ -14,13 +14,14 @@ import { initVendorRegistry } from "./domain/vendor/vendor-registry.js";
 import { initSkillRegistry } from "./domain/skill/skill-registry.js";
 import { seedModels } from "./domain/model/model.service.js";
 import { appRouter } from "./trpc/router.js";
+import { createContext } from "./trpc/trpc.js";
 
 const app = new Hono();
 
 app.use(
   "*",
   cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3010", "http://127.0.0.1:3010"],
     allowMethods: ["GET", "POST", "OPTIONS"],
   }),
 );
@@ -33,6 +34,7 @@ app.use(
   "/trpc/*",
   trpcServer({
     router: appRouter,
+    createContext: (opts) => createContext(opts),
   }),
 );
 
@@ -56,17 +58,10 @@ async function bootstrap() {
   }
 
   try {
-    startBridgeWorker();
-    console.log("BullMQ image bridge worker started");
+    startAllBridgeWorkers();
+    console.log("BullMQ bridge workers started (image/video/concat/audio/pipeline)");
   } catch (err) {
-    console.warn("BullMQ image bridge not started:", (err as Error).message);
-  }
-
-  try {
-    startVideoBridgeWorker();
-    console.log("BullMQ video bridge worker started");
-  } catch (err) {
-    console.warn("BullMQ video bridge not started:", (err as Error).message);
+    console.warn("BullMQ bridge workers not started:", (err as Error).message);
   }
 
   try {

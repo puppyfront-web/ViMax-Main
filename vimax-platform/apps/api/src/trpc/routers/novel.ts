@@ -1,10 +1,9 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb } from "../../infrastructure/db/client.js";
 import { novelImports } from "../../infrastructure/db/schema.js";
 import { eq } from "drizzle-orm";
-
-const t = initTRPC.create();
+import { protectedProcedure, router } from "../trpc.js";
 
 // ── Novel chapter structure ────────────────────────────────────────
 
@@ -17,11 +16,11 @@ const ChapterSchema = z.object({
 
 // ── Novel Import Router ────────────────────────────────────────────
 
-export const novelRouter = t.router({
+export const novelRouter = router({
   /**
    * Import a novel — parse text into chapters.
    */
-  importNovel: t.procedure
+  importNovel: protectedProcedure
     .input(
       z.object({
         canvasId: z.string().uuid(),
@@ -57,7 +56,7 @@ export const novelRouter = t.router({
   /**
    * Get novel import details.
    */
-  get: t.procedure
+  get: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .query(async ({ input }) => {
       const db = getDb();
@@ -85,7 +84,7 @@ export const novelRouter = t.router({
   /**
    * List novel imports for a canvas.
    */
-  list: t.procedure
+  list: protectedProcedure
     .input(z.object({ canvasId: z.string().uuid() }))
     .query(async ({ input }) => {
       const db = getDb();
@@ -111,7 +110,7 @@ export const novelRouter = t.router({
    * Extract events from a specific chapter.
    * Returns structured events that can be used for script generation.
    */
-  extractEvents: t.procedure
+  extractEvents: protectedProcedure
     .input(
       z.object({
         novelImportId: z.string().uuid(),
@@ -170,7 +169,7 @@ export const novelRouter = t.router({
   /**
    * Delete a novel import.
    */
-  delete: t.procedure
+  delete: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input }) => {
       const db = getDb();

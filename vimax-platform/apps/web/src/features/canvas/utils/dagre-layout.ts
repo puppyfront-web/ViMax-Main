@@ -5,6 +5,7 @@
 import Dagre from "@dagrejs/dagre";
 import type { Node, Edge } from "@xyflow/react";
 import type { CanvasNodeType } from "@vimax/contracts";
+import { NODE_TYPE_VISUALS } from "../constants/node-visuals";
 
 // ── Layout Direction ────────────────────────────────────────────────
 
@@ -75,20 +76,45 @@ export function computeDagreLayout(
   });
 }
 
-// ── Zone-based layout (existing ViMax pattern) ──────────────────────
-// Kept as an alternative for users who prefer the spatial zone view.
+// ── Zone-based layout (LibTV-style spatial organization) ────────────
+//
+// Seven columns left → right, one per node type, mirroring the production
+// pipeline (剧本 → 角色 → 分镜 → 镜头 → 首帧 → 视频 → 合成). Nodes stack
+// vertically inside their column. ZoneBackgroundLayer draws the labelled
+// backdrop using the same coordinates, so a zone-arranged canvas reads as a
+// pipeline at a glance.
 
 export const ZONE_LAYOUT: Record<CanvasNodeType, { x: number; y: number }> = {
   script: { x: 40, y: 60 },
-  character: { x: 40, y: 300 },
-  storyboard_cell: { x: 360, y: 60 },
-  shot: { x: 680, y: 160 },
-  image: { x: 1020, y: 60 },
-  video: { x: 1360, y: 160 },
-  concat: { x: 1020, y: 420 },
+  character: { x: 380, y: 60 },
+  storyboard_cell: { x: 720, y: 60 },
+  shot: { x: 1060, y: 60 },
+  image: { x: 1400, y: 60 },
+  video: { x: 1740, y: 60 },
+  concat: { x: 2080, y: 60 },
+  audio: { x: 2080, y: 420 },
 };
 
-const ZONE_OFFSET = 280;
+/** Zone header metadata, derived from the shared node-type visual map so
+ * canvas nodes, palette, zones and minimap all read one source. Icons are
+ * rendered from NODE_TYPE_VISUALS in ZoneBackgroundLayer, not as strings. */
+export const ZONE_META: Record<
+  CanvasNodeType,
+  { label: string; icon: string; color: string }
+> = Object.fromEntries(
+  Object.entries(NODE_TYPE_VISUALS).map(([type, visual]) => [
+    type,
+    { label: visual.label, icon: "", color: `var(${visual.colorVar})` },
+  ]),
+) as Record<CanvasNodeType, { label: string; icon: string; color: string }>;
+
+/** Fixed backdrop box per zone (title bar + room for ~3 stacked nodes). */
+export const ZONE_BOX = { width: 300, height: 760 };
+
+const ZONE_TITLE_HEIGHT = 36;
+// Row height must exceed the tallest node (shot = 220) so stacked nodes
+// never overlap.
+const ZONE_ROW_HEIGHT = 240;
 
 export function computeZoneLayout(nodes: Node[]): Node[] {
   const typeCounts: Record<string, number> = {};
@@ -100,8 +126,8 @@ export function computeZoneLayout(nodes: Node[]): Node[] {
     return {
       ...n,
       position: {
-        x: zone.x + (idx % 3) * 20,
-        y: zone.y + Math.floor(idx / 3) * ZONE_OFFSET,
+        x: zone.x + 16,
+        y: zone.y + ZONE_TITLE_HEIGHT + idx * ZONE_ROW_HEIGHT,
       },
     };
   });

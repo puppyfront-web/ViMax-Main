@@ -16,26 +16,32 @@ interface UseNodeRunOptions {
   edges: Edge[];
 }
 
-interface RunState {
-  nodeId: string;
-  jobId: string;
+export interface NodeRunState {
   progress: number;
   error: string | null;
+  /** true while the job is in flight (from enqueue until completed/failed). */
+  active: boolean;
 }
+
+type RunNodeFn = (nodeId: string) => Promise<unknown>;
+
+/** Auto-retry once per node per session when the worker marks the failure retryable. */
+const MAX_AUTO_RETRIES = 1;
 
 export function useNodeRun({ canvasId, setNodes, edges }: UseNodeRunOptions) {
   const runMutation = trpc.canvas.runNode.useMutation();
-  const [runState, setRunState] = useState<RunState | null>(null);
-  const sseRef = useRef<EventSource | null>(null);
+  const [runStates, setRunStates] = useState<Record<string, NodeRunState>>({});
+  const sseConnections = useRef(new Map<string, EventSource>());
+  const autoRetried = useRef(new Set<string>());
+  const runNodeRef = useRef<RunNodeFn | undefined>(undefined);
 
-  // Cleanup SSE on unmount
   useEffect(() => {
+    const connections = sseConnections.current;
     return () => {
-      sseRef.current?.close();
+      for (const es of connections.values()) es.close();
     };
   }, []);
 
-  // Update node data helper
   const patchNode = useCallback(
     (nodeId: string, patch: Record<string, unknown>) => {
       setNodes((nds) =>
@@ -49,115 +55,116 @@ export function useNodeRun({ canvasId, setNodes, edges }: UseNodeRunOptions) {
     [setNodes],
   );
 
-  // SSE subscription
+  const setRunState = useCallback(
+    (nodeId: string, patch: Partial<NodeRunState>) => {
+      setRunStates((prev) => {
+        const current = prev[nodeId] ?? { progress: 0, error: null, active: false };
+        return { ...prev, [nodeId]: { ...current, ...patch } };
+      });
+    },
+    [],
+  );
+
+  const clearRunState = useCallback((nodeId: string) => {
+    setRunStates((prev) => {
+      if (!(nodeId in prev)) return prev;
+      const { [nodeId]: _removed, ...rest } = prev;
+      return rest;
+    });
+  }, []);
+
+  // One SSE connection per job, keyed by jobId so parallel node runs
+  // stream their progress independently.
   const subscribeSSE = useCallback(
     (nodeId: string, jobId: string) => {
-      sseRef.current?.close();
-
       const es = new EventSource(`${API_BASE}/sse/jobs/${jobId}`);
-      sseRef.current = es;
+      sseConnections.current.set(jobId, es);
+      const close = () => {
+        es.close();
+        sseConnections.current.delete(jobId);
+      };
 
       es.addEventListener("started", () => {
         patchNode(nodeId, { status: "running" });
-        setRunState((s) => (s ? { ...s, progress: 5 } : null));
+        setRunState(nodeId, { progress: 5, active: true });
       });
 
       es.addEventListener("progress", (e) => {
         try {
-          const d = JSON.parse(e.data);
-          const pct = d.percent ?? 0;
-          setRunState((s) => (s ? { ...s, progress: pct } : null));
+          setRunState(nodeId, { progress: JSON.parse(e.data).percent ?? 0 });
         } catch { /* ignore parse errors */ }
       });
 
-      es.addEventListener("completed", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          patchNode(nodeId, {
-            status: "done",
-            outputAssetId: d.output?.storage_key
-              ? d.output.storage_key.split("/").pop()?.slice(0, 8)
-              : undefined,
-          });
-        } catch {
-          patchNode(nodeId, { status: "done" });
-        }
+      es.addEventListener("completed", () => {
+        // Only flip status here — the authoritative outputAssetId arrives
+        // via the `canvas.node_status` WebSocket event (the real asset id).
+        // The SSE completed payload carries a storage_key, not an asset id,
+        // so deriving outputAssetId from it would write a bogus value that
+        // later gets persisted into the canvas via save().
+        patchNode(nodeId, { status: "done" });
         // Mark downstream nodes dirty in frontend state
         markDownstreamDirty(nodeId, setNodes, edges);
-        setRunState((s) => (s ? { ...s, progress: 100, error: null } : null));
-        es.close();
+        clearRunState(nodeId);
+        close();
       });
 
       es.addEventListener("failed", (e) => {
+        let message = "未知错误";
+        let retryable = false;
         try {
           const d = JSON.parse(e.data);
-          const msg = d.error_message ?? "生成失败";
-          patchNode(nodeId, { status: "failed" });
-          setRunState((s) => (s ? { ...s, error: msg } : null));
-        } catch {
-          patchNode(nodeId, { status: "failed" });
-          setRunState((s) =>
-            s ? { ...s, error: "未知错误" } : null,
-          );
+          message = d.error_message ?? message;
+          retryable = d.retryable === true;
+        } catch { /* keep defaults */ }
+        patchNode(nodeId, { status: "failed", errorMsg: message });
+        setRunState(nodeId, { active: false, error: message });
+        close();
+
+        if (retryable && !autoRetried.current.has(nodeId)) {
+          autoRetried.current.add(nodeId);
+          void runNodeRef.current?.(nodeId).catch(() => {});
         }
-        es.close();
       });
 
-      es.onerror = () => {
-        es.close();
-      };
+      es.onerror = close;
     },
-    [patchNode],
+    [patchNode, setNodes, edges, setRunState, clearRunState],
   );
 
-  // Main run function
   const runNode = useCallback(
     async (nodeId: string) => {
-      // Reset state
-      setRunState({ nodeId, jobId: "", progress: 0, error: null });
-      patchNode(nodeId, { status: "running" });
+      setRunState(nodeId, { progress: 0, error: null, active: true });
+      patchNode(nodeId, { status: "running", errorMsg: null });
 
       try {
         const result = await runMutation.mutateAsync({
           canvas_id: canvasId,
           node_id: nodeId,
         });
-
-        setRunState({
-          nodeId,
-          jobId: result.job_id,
-          progress: 0,
-          error: null,
-        });
-
         subscribeSSE(nodeId, result.job_id);
-
         return result;
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "启动失败";
-        patchNode(nodeId, { status: "failed" });
-        setRunState({ nodeId, jobId: "", progress: 0, error: msg });
+        patchNode(nodeId, { status: "failed", errorMsg: msg });
+        setRunState(nodeId, { active: false, error: msg });
         throw err;
       }
     },
-    [canvasId, runMutation, subscribeSSE, patchNode],
+    [canvasId, runMutation, subscribeSSE, patchNode, setRunState],
   );
 
-  // Reset state
-  const clearRunState = useCallback(() => {
-    setRunState(null);
-    sseRef.current?.close();
-  }, []);
+  useEffect(() => {
+    runNodeRef.current = runNode;
+  }, [runNode]);
+
+  const isRunning =
+    runMutation.isPending || Object.values(runStates).some((s) => s.active);
 
   return {
     runNode,
-    isRunning: runMutation.isPending || (runState !== null && runState.progress < 100),
-    runningNodeId: runState?.nodeId ?? null,
-    progress: runState?.progress ?? 0,
-    error: runState?.error ?? null,
-    jobId: runState?.jobId ?? null,
-    clearRunState,
+    isRunning,
+    nodeRunStates: runStates,
   };
 }
 

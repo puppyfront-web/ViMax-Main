@@ -35,6 +35,7 @@ export default function CanvasPage() {
   const videoModelId = searchParams.get("videoModelId") ?? undefined;
   const initialPrompt = searchParams.get("prompt") ?? undefined;
   const initialMode = searchParams.get("mode") ?? undefined;
+  const productAssetId = searchParams.get("productAssetId") ?? undefined;
 
   return (
     <ErrorBoundary>
@@ -66,6 +67,7 @@ export default function CanvasPage() {
             defaultVideoModelId={videoModelId}
             initialPrompt={initialPrompt}
             initialMode={initialMode}
+            productAssetId={productAssetId}
           />
         </div>
       </div>

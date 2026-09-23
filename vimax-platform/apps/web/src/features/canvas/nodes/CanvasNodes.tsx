@@ -1,117 +1,93 @@
 "use client";
 
-import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react";
-import type { CanvasNodeType } from "@vimax/contracts";
-import { ModelSelect } from "@/features/models/ModelSelect";
+import { useEffect, useState } from "react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
+import type { CanvasNodeType, VariantEntry } from "@vimax/contracts";
+import { Download, Check, ImagePlus, Play, Plus, UserRound, TriangleAlert, RotateCcw } from "lucide-react";
+import { trpc } from "@/lib/trpc/client";
+import { AssetPreview } from "../components/AssetPreview";
+import { InlineEditText } from "./InlineEditText";
+import { useCanvas } from "../canvas-context";
+import { RUNNABLE_TYPES } from "../constants/canvas-flow";
+import {
+  NODE_TYPE_VISUALS,
+  STATUS_COLOR,
+  STATUS_LABEL,
+  nodeTypeColor,
+} from "../constants/node-visuals";
 
-// ── Toonflow-style constants ────────────────────────────────────────
-
-const STATUS_COLORS: Record<string, string> = {
-  idle: "#555",
-  running: "#f59e0b",
-  done: "#22c55e",
-  dirty: "#ef4444",
-  failed: "#ef4444",
-};
-
-const TYPE_LABELS: Record<CanvasNodeType, string> = {
-  script: "剧本",
-  character: "角色",
-  storyboard_cell: "分镜格",
-  shot: "镜头",
-  image: "首帧",
-  video: "视频",
-  concat: "合成",
-};
-
-const TYPE_ICONS: Record<CanvasNodeType, string> = {
-  script: "📜",
-  character: "👤",
-  storyboard_cell: "🎬",
-  shot: "🎥",
-  image: "🖼️",
-  video: "▶️",
-  concat: "🔗",
-};
-
-const TYPE_COLORS: Record<CanvasNodeType, string> = {
-  script: "#f59e0b",
-  character: "#ec4899",
-  storyboard_cell: "#06b6d4",
-  shot: "#3b82f6",
-  image: "#6366f1",
-  video: "#22c55e",
-  concat: "#a855f7",
-};
-
-// ── Toonflow-style Canvas Node Shell ────────────────────────────────
-// Replicates Toonflow's node design:
-// - Black title badge (5px 10px padding, border-radius 8px 0, 16px font)
-// - .dragHandle on title bar (cursor: grab)
-// - Side handles (Left=source, Right=target) with offset
-// - Status indicators (4 states: idle/running/done/dirty/failed)
-// - Connection handles on left/right (matching Toonflow's LR flow)
+// ── Canvas Node Shell ───────────────────────────────────────────────
+// One card anatomy for every node type:
+// - Header: tinted icon chip (type color) + type label + status dot
+// - Body: free content on a hairline divider
+// - State: accent outline for selection, blue ring for running,
+//   dashed amber border for dirty, red border for failed. Type colors
+//   never paint the card border, so selection always reads as selection.
 
 export interface CanvasNodeShellProps {
+  /** Own node id — enables the inline retry button on failure. */
+  nodeId?: string;
   type: CanvasNodeType;
   status?: string;
   selected?: boolean;
+  /** Failure message rendered inline on the card (from node data.errorMsg). */
+  errorMsg?: string;
+  /** Hover actions rendered in a floating bubble above the node. */
+  actions?: React.ReactNode;
   children: React.ReactNode;
 }
 
 export function CanvasNodeShell({
+  nodeId,
   type,
   status = "idle",
   selected = false,
+  errorMsg,
+  actions,
   children,
 }: CanvasNodeShellProps) {
-  const color = TYPE_COLORS[type];
-  const dotColor = STATUS_COLORS[status] ?? STATUS_COLORS.idle;
+  const { runNode } = useCanvas();
+  const [hovered, setHovered] = useState(false);
+  const visual = NODE_TYPE_VISUALS[type];
+  const Icon = visual.icon;
+  const typeColor = nodeTypeColor(type);
+
   const isRunning = status === "running";
   const isDirty = status === "dirty";
   const isFailed = status === "failed";
-  const isDone = status === "done";
 
-  const borderColor = isDirty || isFailed
-    ? "#ef4444"
+  const borderColor = isFailed
+    ? "var(--color-node-error)"
     : selected
-      ? color
-      : "var(--color-border)";
+      ? "var(--color-accent)"
+      : isRunning
+        ? "rgba(95, 159, 216, 0.55)"
+        : "var(--color-hairline-strong)";
 
   const shadow = selected
-    ? `0 0 16px ${color}33`
-    : isRunning
-      ? `0 0 12px ${color}66, 0 0 24px ${color}22`
-    : isDirty
-      ? "0 0 8px #ef444444, 0 0 16px #ef444422"
-    : isFailed
-      ? "0 0 8px #ef444444"
-    : "0 2px 8px rgba(0,0,0,0.3)";
+    ? "0 4px 16px rgba(0,0,0,0.4), 0 0 0 3px var(--color-accent-muted)"
+    : "0 2px 10px rgba(0,0,0,0.32)";
 
   const anim = isRunning
-    ? "nodePulse 1.5s ease-in-out infinite"
+    ? "nodePulse 1.6s ease-in-out infinite"
     : isDirty
       ? "nodeDirtyPulse 2s ease-in-out infinite"
-    : undefined;
+      : undefined;
 
-  // Status badge text (Toonflow-style: "生成中"/"已完成"/"生成失败")
-  const statusText: Record<string, string> = {
-    idle: "",
-    running: "⏳ 生成中",
-    done: "✅ 已完成",
-    dirty: "⚠️ 已过期",
-    failed: "❌ 失败",
-  };
+  const statusColor = STATUS_COLOR[status] ?? STATUS_COLOR.idle;
+  const statusLabel = STATUS_LABEL[status];
 
   return (
     <div
       className="node-shell"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         minWidth: 220,
         maxWidth: 320,
-        borderRadius: 10,
-        border: `2px solid ${borderColor}`,
-        backgroundColor: "var(--color-surface)",
+        borderRadius: 12,
+        border: `1px ${isDirty ? "dashed" : "solid"} ${borderColor}`,
+        backgroundColor: "var(--color-surface-1)",
         boxShadow: shadow,
         transition: "border-color 0.2s, box-shadow 0.2s",
         animation: anim,
@@ -119,20 +95,39 @@ export function CanvasNodeShell({
         overflow: "visible",
       }}
     >
-      {/* Left target handle (Toonflow-style: offset for LR flow) */}
+      {/* Left target handle — LibTV-style grip */}
       <Handle
         type="target"
         position={Position.Left}
         style={{
-          background: isDirty ? "#ef4444" : color,
-          border: `2px solid var(--color-surface)`,
-          width: 10,
-          height: 10,
-          left: -5,
+          width: 16,
+          height: 16,
+          left: -9,
+          background: "var(--color-surface-1)",
+          border: `1.5px solid ${isFailed ? "var(--color-node-error)" : typeColor}`,
+          color: isFailed ? "var(--color-node-error)" : typeColor,
         }}
-      />
+      >
+        <Plus size={9} strokeWidth={3} style={{ pointerEvents: "none" }} />
+      </Handle>
 
-      {/* ── Title bar with drag handle (Toonflow pattern) ── */}
+      {/* Hover quick actions */}
+      {hovered && actions && (
+        <div
+          style={{
+            position: "absolute",
+            top: -32,
+            right: 6,
+            display: "flex",
+            gap: 4,
+            zIndex: 30,
+          }}
+        >
+          {actions}
+        </div>
+      )}
+
+      {/* Header: type chip + label + status */}
       <div
         className="dragHandle"
         style={{
@@ -141,157 +136,338 @@ export function CanvasNodeShell({
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: "8px 12px 6px",
+          padding: "8px 12px",
         }}
       >
-        {/* Toonflow-style title badge: black bg, white text */}
-        <div
-          style={{
-            backgroundColor: isDirty || isFailed ? "#ef4444" : "#000",
-            padding: "4px 10px",
-            color: "#fff",
-            borderRadius: "8px 0",
-            fontSize: 13,
-            fontWeight: 600,
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-          }}
-        >
-          <span style={{ fontSize: 14 }}>{TYPE_ICONS[type]}</span>
-          {TYPE_LABELS[type]}
-        </div>
-
-        {/* Status dot */}
         <span
           style={{
-            width: 7,
-            height: 7,
-            borderRadius: "50%",
-            backgroundColor: dotColor,
-            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 24,
+            height: 24,
+            borderRadius: 7,
+            backgroundColor: `color-mix(in srgb, ${typeColor} 16%, transparent)`,
+            color: typeColor,
             flexShrink: 0,
           }}
-          title={status}
-        />
-      </div>
-
-      {/* Status bar (Toonflow-style: shows generation status) */}
-      {statusText[status] && (
-        <div
+        >
+          <Icon size={13} />
+        </span>
+        <span
           style={{
-            padding: "0 12px 4px",
-            fontSize: 10,
-            color: isRunning ? "#f59e0b" : isDone ? "#22c55e" : isFailed ? "#ef4444" : "#ef4444",
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--color-ink)",
+            lineHeight: 1,
           }}
         >
-          {statusText[status]}
-        </div>
-      )}
+          {visual.label}
+        </span>
 
-      {/* Divider line */}
+        {isRunning && (
+          <span
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 14,
+              right: 14,
+              height: 2,
+              borderRadius: 1,
+              overflow: "hidden",
+            }}
+          >
+            <span
+              style={{
+                display: "block",
+                height: "100%",
+                width: "100%",
+                background:
+                  "linear-gradient(90deg, transparent, var(--color-node-running), transparent)",
+                animation: "beamSlide 1.4s ease-in-out infinite",
+              }}
+            />
+          </span>
+        )}
+
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+          {statusLabel && (
+            <span style={{ fontSize: 10, color: statusColor, fontWeight: 500 }}>{statusLabel}</span>
+          )}
+          <span
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              backgroundColor: statusColor,
+            }}
+            title={status}
+          />
+        </span>
+      </div>
+
+      {/* Divider */}
       <div
         style={{
           height: 1,
-          backgroundColor: isDirty ? "#ef444433" : "var(--color-border)",
+          backgroundColor: isDirty
+            ? "color-mix(in srgb, var(--color-node-dirty) 25%, transparent)"
+            : "var(--color-hairline)",
           margin: "0 12px",
         }}
       />
 
-      {/* Body content */}
-      <div style={{ padding: "8px 12px", fontSize: 12, lineHeight: 1.5 }}>
+      {/* Body */}
+      <div style={{ padding: "9px 12px 11px", fontSize: 12, lineHeight: 1.55 }}>
         {children}
       </div>
 
-      {/* Right source handle (Toonflow-style: offset for LR flow) */}
+      {/* Inline failure feedback — message + retry, right on the card */}
+      {isFailed && (
+        <div
+          className="nodrag"
+          style={{
+            margin: "0 12px 10px",
+            padding: "6px 8px",
+            borderRadius: 8,
+            backgroundColor: "color-mix(in srgb, var(--color-node-error) 10%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-node-error) 30%, transparent)",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+          }}
+        >
+          <TriangleAlert size={11} style={{ color: "var(--color-node-error)", flexShrink: 0, marginTop: 2 }} />
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 10.5,
+              color: "var(--color-node-error)",
+              lineHeight: 1.5,
+              wordBreak: "break-all",
+              display: "-webkit-box",
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
+            {errorMsg ?? "节点执行失败"}
+          </span>
+          {nodeId && (
+            <button
+              type="button"
+              title="重试此节点"
+              aria-label="重试此节点"
+              onClick={(e) => {
+                e.stopPropagation();
+                void runNode(nodeId);
+              }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                flexShrink: 0,
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "2px 7px",
+                borderRadius: 6,
+                border: "1px solid color-mix(in srgb, var(--color-node-error) 45%, transparent)",
+                backgroundColor: "transparent",
+                color: "var(--color-node-error)",
+                cursor: "pointer",
+              }}
+            >
+              <RotateCcw size={9} />
+              重试
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Right source handle — LibTV-style grip */}
       <Handle
         type="source"
         position={Position.Right}
         style={{
-          background: color,
-          border: "2px solid var(--color-surface)",
-          width: 10,
-          height: 10,
-          right: -5,
+          width: 16,
+          height: 16,
+          right: -9,
+          background: "var(--color-surface-1)",
+          border: `1.5px solid ${isFailed ? "var(--color-node-error)" : typeColor}`,
+          color: isFailed ? "var(--color-node-error)" : typeColor,
         }}
-      />
-
-      {/* Done indicator: subtle green top border glow */}
-      {isDone && (
-        <div
-          style={{
-            position: "absolute",
-            top: -2,
-            left: 10,
-            right: 10,
-            height: 2,
-            backgroundColor: "#22c55e",
-            borderRadius: 1,
-          }}
-        />
-      )}
+      >
+        <Plus size={9} strokeWidth={3} style={{ pointerEvents: "none" }} />
+      </Handle>
     </div>
   );
 }
 
 // ── Individual Node Components ─────────────────────────────────────
 
-export function ScriptNode({ data, selected }: NodeProps) {
+const ACTION_BUTTON_STYLE: React.CSSProperties = {
+  width: 26,
+  height: 26,
+  borderRadius: "50%",
+  border: "1px solid var(--color-hairline-strong)",
+  backgroundColor: "var(--color-surface-2)",
+  color: "var(--color-ink)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  cursor: "pointer",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+};
+
+/** Hover bubble actions: run, download output, spawn a downstream i2i image node. */
+export function NodeQuickActions({
+  nodeId,
+  nodeType,
+  outputAssetId,
+}: {
+  nodeId: string;
+  nodeType: string;
+  outputAssetId?: string;
+}) {
+  const { runNode, addDownstreamImageNode } = useCanvas();
+  const [downloadId, setDownloadId] = useState<string | null>(null);
+  const { data: downloadUrl } = trpc.canvas.getAssetUrl.useQuery(
+    { asset_id: downloadId! },
+    { enabled: downloadId !== null, staleTime: 60_000 },
+  );
+
+  useEffect(() => {
+    if (downloadUrl?.url) {
+      window.open(downloadUrl.url, "_blank");
+      setDownloadId(null);
+    }
+  }, [downloadUrl]);
+
+  const canSpawnImage = ["script", "character", "storyboard_cell", "shot", "image", "video"].includes(nodeType);
+
+  return (
+    <>
+      {RUNNABLE_TYPES.has(nodeType) && (
+        <button
+          type="button"
+          title="运行节点"
+          aria-label="运行节点"
+          style={ACTION_BUTTON_STYLE}
+          onClick={(e) => {
+            e.stopPropagation();
+            void runNode(nodeId);
+          }}
+        >
+          <Play size={12} />
+        </button>
+      )}
+      {outputAssetId && (
+        <button
+          type="button"
+          title="下载产出"
+          style={ACTION_BUTTON_STYLE}
+          onClick={(e) => {
+            e.stopPropagation();
+            setDownloadId(outputAssetId);
+          }}
+        >
+          <Download size={12} />
+        </button>
+      )}
+      {canSpawnImage && (
+        <button
+          type="button"
+          title="插入下游图片节点（基于本节点输出 i2i 精修）"
+          aria-label="插入下游图片节点"
+          style={ACTION_BUTTON_STYLE}
+          onClick={(e) => {
+            e.stopPropagation();
+            addDownstreamImageNode(nodeId);
+          }}
+        >
+          <ImagePlus size={12} />
+        </button>
+      )}
+    </>
+  );
+}
+
+export function ScriptNode({ id, data, selected }: NodeProps) {
   const content = (data.content as string) ?? "";
   return (
     <CanvasNodeShell type="script" status={data.status as string} selected={selected}>
-      <p style={{ color: "var(--color-text)", wordBreak: "break-word", margin: 0 }}>
-        {content.slice(0, 150)}
-        {content.length > 150 ? "…" : ""}
-      </p>
+      <InlineEditText
+        nodeId={id}
+        field="content"
+        value={content}
+        placeholder="双击编辑剧本…"
+        clampLines={5}
+        rows={6}
+      />
     </CanvasNodeShell>
   );
 }
 
-export function CharacterNode({ id, data, selected }: NodeProps) {
+export function CharacterNode({ data, selected }: NodeProps) {
   const name = (data.name as string) ?? "新角色";
   const desc = (data.description as string) ?? "";
-  const modelId = (data.modelId as string) ?? "";
-  const { updateNodeData } = useReactFlow();
-
-  const handleModelChange = (newModelId: string) => {
-    updateNodeData(id, { ...data, modelId: newModelId });
-  };
-
   return (
     <CanvasNodeShell type="character" status={data.status as string} selected={selected}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ fontSize: 20 }}>👤</span>
-        <span style={{ fontWeight: 600, color: "var(--color-text)" }}>{name}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: "50%",
+            backgroundColor: "color-mix(in srgb, var(--color-node-character) 14%, transparent)",
+            color: "var(--color-node-character)",
+            flexShrink: 0,
+          }}
+        >
+          <UserRound size={12} />
+        </span>
+        <span style={{ fontWeight: 600, color: "var(--color-ink)" }}>{name}</span>
       </div>
       {desc && (
-        <p style={{ color: "var(--color-text-muted)", fontSize: 11, margin: "4px 0 0", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+        <p style={{ color: "var(--color-ink-muted)", fontSize: 11, margin: "5px 0 0", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
           {desc}
         </p>
       )}
-      <div style={{ marginTop: 6, borderTop: "1px solid var(--color-border)", paddingTop: 6 }}>
-        <ModelSelect
-          type="image"
-          value={modelId}
-          onChange={handleModelChange}
-          compact
-          placeholder="图像模型"
-        />
-      </div>
     </CanvasNodeShell>
   );
 }
 
-export function StoryboardCellNode({ data, selected }: NodeProps) {
+export function StoryboardCellNode({ id, data, selected }: NodeProps) {
   const brief = (data.shotBrief as string) ?? "";
+  const audio = (data.audioDesc as string) ?? "";
   return (
-    <CanvasNodeShell type="storyboard_cell" status={data.status as string} selected={selected}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <span style={{ fontSize: 11, color: "#06b6d4" }}>机位 #{(data.cameraIdx as number) ?? 0}</span>
+    <CanvasNodeShell nodeId={id} type="storyboard_cell" status={data.status as string} selected={selected} errorMsg={(data.errorMsg as string) ?? undefined}>
+      <div style={{ marginBottom: 4 }}>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            padding: "1px 7px",
+            borderRadius: 999,
+            backgroundColor: "color-mix(in srgb, var(--color-node-storyboard) 14%, transparent)",
+            color: "var(--color-node-storyboard)",
+          }}
+        >
+          机位 #{(data.cameraIdx as number) ?? 0}
+        </span>
       </div>
       {brief && (
-        <p style={{ color: "var(--color-text-muted)", fontSize: 11, margin: 0, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+        <p style={{ color: "var(--color-ink-muted)", fontSize: 11, margin: 0, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
           {brief}
+        </p>
+      )}
+      {audio && (
+        <p style={{ color: "var(--color-ink-tertiary)", fontSize: 10, margin: "4px 0 0", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {audio}
         </p>
       )}
     </CanvasNodeShell>
@@ -301,36 +477,39 @@ export function StoryboardCellNode({ data, selected }: NodeProps) {
 export function ShotNode({ id, data, selected }: NodeProps) {
   const ffDesc = (data.ffDesc as string) ?? "";
   const motion = (data.motionDesc as string) ?? "";
-  const modelId = (data.modelId as string) ?? "";
-  const { updateNodeData } = useReactFlow();
-
-  const handleModelChange = (newModelId: string) => {
-    updateNodeData(id, { ...data, modelId: newModelId });
-  };
-
   return (
-    <CanvasNodeShell type="shot" status={data.status as string} selected={selected}>
+    <CanvasNodeShell
+      type="shot"
+      status={data.status as string}
+      selected={selected}
+      actions={
+        <NodeQuickActions
+          nodeId={id}
+          nodeType="shot"
+          outputAssetId={data.outputAssetId as string | undefined}
+        />
+      }
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {ffDesc && (
           <div style={{ fontSize: 11 }}>
-            <span style={{ color: "#3b82f6", fontWeight: 600 }}>首帧:</span>{" "}
-            <span style={{ color: "var(--color-text-muted)" }}>{ffDesc.slice(0, 80)}{ffDesc.length > 80 ? "…" : ""}</span>
+            <span style={{ color: "var(--color-ink-subtle)", fontWeight: 600 }}>首帧</span>{" "}
+            <span style={{ color: "var(--color-ink-muted)" }}>{ffDesc.slice(0, 80)}{ffDesc.length > 80 ? "…" : ""}</span>
           </div>
         )}
         {motion && (
           <div style={{ fontSize: 11 }}>
-            <span style={{ color: "#f59e0b", fontWeight: 600 }}>运动:</span>{" "}
-            <span style={{ color: "var(--color-text-muted)" }}>{motion}</span>
+            <span style={{ color: "var(--color-ink-subtle)", fontWeight: 600 }}>运动</span>{" "}
+            <span style={{ color: "var(--color-ink-muted)" }}>{motion}</span>
           </div>
         )}
-      </div>
-      <div style={{ marginTop: 6, borderTop: "1px solid var(--color-border)", paddingTop: 6 }}>
-        <ModelSelect
-          type="image"
-          value={modelId}
-          onChange={handleModelChange}
-          compact
-          placeholder="图像模型"
+        <InlineEditText
+          nodeId={id}
+          field="ffDesc"
+          value={ffDesc}
+          placeholder="双击编辑首帧描述…"
+          clampLines={2}
+          rows={3}
         />
       </div>
     </CanvasNodeShell>
@@ -340,32 +519,85 @@ export function ShotNode({ id, data, selected }: NodeProps) {
 export function ImageNode({ id, data, selected }: NodeProps) {
   const prompt = (data.prompt as string) ?? "";
   const size = (data.size as string) ?? "1024x1024";
-  const modelId = (data.modelId as string) ?? "";
-  const { updateNodeData } = useReactFlow();
+  const outputAssetId = data.outputAssetId as string | undefined;
+  const status = data.status as string;
+  const variants = (data.variants as VariantEntry[] | undefined) ?? [];
+  const { canvasId, handleUpdateNodeData } = useCanvas();
+  const pickVariant = trpc.canvas.pickVariant.useMutation();
 
-  const handleModelChange = (newModelId: string) => {
-    updateNodeData(id, { ...data, modelId: newModelId });
+  const handlePickVariant = (variant: VariantEntry) => {
+    if (variant.assetId === outputAssetId) return;
+    pickVariant
+      .mutateAsync({ canvas_id: canvasId, node_id: id, asset_id: variant.assetId })
+      .then(() => handleUpdateNodeData(id, "outputAssetId", variant.assetId))
+      .catch(() => {});
   };
 
   return (
-    <CanvasNodeShell type="image" status={data.status as string} selected={selected}>
+    <CanvasNodeShell
+      type="image"
+      status={status}
+      selected={selected}
+      actions={
+        <NodeQuickActions nodeId={id} nodeType="image" outputAssetId={outputAssetId} />
+      }
+    >
+      {outputAssetId && status === "done" && (
+        <div style={{ marginBottom: 8 }}>
+          <AssetPreview assetId={outputAssetId} kind="image" />
+        </div>
+      )}
+      {variants.length > 1 && (
+        <div
+          className="nodrag nowheel"
+          style={{ display: "flex", gap: 4, overflowX: "auto", marginBottom: 8 }}
+        >
+          {variants.slice(0, 8).map((variant) => (
+            <button
+              key={variant.assetId}
+              type="button"
+              title={variant.assetId === outputAssetId ? "当前选用" : "选用此变体"}
+              onClick={(e) => {
+                e.stopPropagation();
+                handlePickVariant(variant);
+              }}
+              style={{
+                padding: 0,
+                border: variant.assetId === outputAssetId ? "2px solid var(--color-accent)" : "2px solid transparent",
+                borderRadius: 6,
+                overflow: "hidden",
+                cursor: "pointer",
+                flexShrink: 0,
+                background: "none",
+              }}
+            >
+              <AssetPreview assetId={variant.assetId} kind="image" height={56} />
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, backgroundColor: "#6366f122", color: "#6366f1" }}>
+        <span
+          style={{
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+            padding: "1px 7px",
+            borderRadius: 999,
+            backgroundColor: "var(--color-surface-3)",
+            color: "var(--color-ink-subtle)",
+          }}
+        >
           {size}
         </span>
-        <ModelSelect
-          type="image"
-          value={modelId}
-          onChange={handleModelChange}
-          compact
-          placeholder="模型"
-        />
       </div>
-      {prompt && (
-        <p style={{ color: "var(--color-text-muted)", fontSize: 11, margin: 0, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-          {prompt}
-        </p>
-      )}
+      <InlineEditText
+        nodeId={id}
+        field="prompt"
+        value={prompt}
+        placeholder="双击编辑提示词…"
+        clampLines={2}
+        rows={3}
+      />
     </CanvasNodeShell>
   );
 }
@@ -373,44 +605,122 @@ export function ImageNode({ id, data, selected }: NodeProps) {
 export function VideoNode({ id, data, selected }: NodeProps) {
   const motion = (data.motionPreset as string) ?? "";
   const duration = (data.durationSec as number) ?? 4;
-  const modelId = (data.modelId as string) ?? "";
-  const { updateNodeData } = useReactFlow();
-
-  const handleModelChange = (newModelId: string) => {
-    updateNodeData(id, { ...data, modelId: newModelId });
-  };
+  const outputAssetId = data.outputAssetId as string | undefined;
+  const status = data.status as string;
 
   return (
-    <CanvasNodeShell type="video" status={data.status as string} selected={selected}>
+    <CanvasNodeShell
+      nodeId={id}
+      type="video"
+      status={status}
+      selected={selected}
+      errorMsg={(data.errorMsg as string) ?? undefined}
+      actions={
+        <NodeQuickActions nodeId={id} nodeType="video" outputAssetId={outputAssetId} />
+      }
+    >
+      {outputAssetId && status === "done" && (
+        <div style={{ marginBottom: 8 }}>
+          <AssetPreview assetId={outputAssetId} kind="video" />
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, backgroundColor: "#22c55e22", color: "#22c55e" }}>
+        <span
+          style={{
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+            padding: "1px 7px",
+            borderRadius: 999,
+            backgroundColor: "var(--color-surface-3)",
+            color: "var(--color-ink-subtle)",
+          }}
+        >
           {duration}s
         </span>
         {motion && (
-          <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+          <span style={{ fontSize: 11, color: "var(--color-ink-muted)" }}>
             {motion}
           </span>
         )}
       </div>
-      <ModelSelect
-        type="video"
-        value={modelId}
-        onChange={handleModelChange}
-        compact
-        placeholder="视频模型"
+    </CanvasNodeShell>
+  );
+}
+
+export function AudioNode({ id, data, selected }: NodeProps) {
+  const prompt = (data.prompt as string) ?? "";
+  const outputAssetId = data.outputAssetId as string | undefined;
+  const status = data.status as string;
+  const { data: audioUrl } = trpc.canvas.getAssetUrl.useQuery(
+    { asset_id: outputAssetId! },
+    { enabled: !!outputAssetId && status === "done", staleTime: 60_000 },
+  );
+
+  return (
+    <CanvasNodeShell
+      type="audio"
+      status={status}
+      selected={selected}
+      actions={<NodeQuickActions nodeId={id} nodeType="audio" outputAssetId={outputAssetId} />}
+    >
+      {outputAssetId && status === "done" && audioUrl?.url && (
+        <audio controls src={audioUrl.url} className="mb-2 w-full" style={{ height: 32 }} />
+      )}
+      <InlineEditText
+        nodeId={id}
+        field="prompt"
+        value={prompt}
+        placeholder="双击描述音效或配乐…"
+        clampLines={3}
+        rows={3}
       />
     </CanvasNodeShell>
   );
 }
 
-export function ConcatNode({ data, selected }: NodeProps) {
+export function ConcatNode({ id, data, selected }: NodeProps) {
   const transition = (data.transition as string) ?? "dissolve";
+  const outputAssetId = data.outputAssetId as string | undefined;
+  const status = data.status as string;
+
   return (
-    <CanvasNodeShell type="concat" status={data.status as string} selected={selected}>
+    <CanvasNodeShell
+      nodeId={id}
+      type="concat"
+      status={status}
+      selected={selected}
+      errorMsg={(data.errorMsg as string) ?? undefined}
+      actions={
+        <NodeQuickActions nodeId={id} nodeType="concat" outputAssetId={outputAssetId} />
+      }
+    >
+      {outputAssetId && status === "done" && (
+        <div style={{ marginBottom: 8 }}>
+          <AssetPreview assetId={outputAssetId} kind="video" />
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+        <span style={{ fontSize: 11, color: "var(--color-ink-muted)" }}>
           转场: {transition}
         </span>
+        {status === "done" && outputAssetId && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 3,
+              fontSize: 10,
+              padding: "1px 7px",
+              borderRadius: 999,
+              backgroundColor: "var(--color-success-subtle)",
+              color: "var(--color-success)",
+              fontWeight: 600,
+            }}
+          >
+            <Check size={10} />
+            可下载
+          </span>
+        )}
       </div>
     </CanvasNodeShell>
   );

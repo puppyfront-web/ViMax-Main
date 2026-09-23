@@ -2,15 +2,23 @@
 
 import { useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
+import { ChevronDown, Trash2 } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import {
   VIDEO_MOTION_PRESETS,
   KEY_LIGHT_POSITIONS,
   RIM_LIGHT_PRESETS,
   AMBIENT_LIGHT_OPTIONS,
+  ECOMMERCE_ASPECT_RATIOS,
+  ECOMMERCE_SCENES,
+  IMAGE_KIND_PRESETS,
+  getAspectRatioPreset,
+  getImageKindPreset,
 } from "@vimax/contracts";
-
-const RUNNABLE_TYPES = new Set(["image", "character", "shot", "video"]);
+import { VariantGallery, type VariantEntry } from "./VariantGallery";
+import { RUNNABLE_TYPES } from "../constants/canvas-flow";
+import { STATUS_COLOR, NODE_TYPE_VISUALS } from "../constants/node-visuals";
+import type { NodeRunState } from "../hooks/useNodeRun";
 
 interface NodeInspectorProps {
   node: Node | null;
@@ -18,13 +26,12 @@ interface NodeInspectorProps {
   onRunNode?: (nodeId: string) => void;
   onDeleteNode?: (nodeId: string) => void;
   onUpdateNodeData?: (nodeId: string, key: string, value: unknown) => void;
-  isRunning?: boolean;
-  runningNodeId?: string | null;
-  progress?: number;
-  runError?: string | null;
+  onGraphAppend?: (nodes: Node[], edges: Edge[]) => void;
   edges?: Edge[];
   nodes?: Node[];
   canvasId?: string;
+  /** This node's own run state — progress/error stay correct while other nodes run in parallel. */
+  runState?: NodeRunState;
 }
 
 function displayValue(value: unknown): string {
@@ -49,13 +56,11 @@ export function NodeInspector({
   onRunNode,
   onDeleteNode,
   onUpdateNodeData,
-  isRunning,
-  runningNodeId,
-  progress,
-  runError,
+  onGraphAppend,
   edges = [],
   nodes = [],
   canvasId,
+  runState,
 }: NodeInspectorProps) {
   if (!node) {
     return (
@@ -80,6 +85,9 @@ export function NodeInspector({
   const typeLabel = TYPE_LABELS[node.type ?? ""] ?? node.type;
   const data = node.data as Record<string, unknown> | undefined;
   const status = (data?.status as string) ?? "idle";
+  const isNodeRunning = runState?.active === true;
+  const runProgress = runState?.progress ?? 0;
+  const runError = runState?.error ?? null;
 
   return (
     <div
@@ -144,14 +152,7 @@ export function NodeInspector({
           style={{
             fontSize: 11,
             fontWeight: 600,
-            color:
-              status === "done"
-                ? "#22c55e"
-                : status === "running"
-                  ? "#f59e0b"
-                  : status === "dirty" || status === "failed"
-                    ? "#ef4444"
-                    : "var(--color-text-muted)",
+            color: STATUS_COLOR[status] ?? "var(--color-ink-muted)",
           }}
         >
           {status === "idle" && "待生成"}
@@ -162,7 +163,7 @@ export function NodeInspector({
         </span>
         {!!data?.outputAssetId && (
           <p style={{ fontSize: 10, color: "var(--color-text-muted)", marginTop: 4 }}>
-            📦 产出: {String(data.outputAssetId).slice(0, 8)}…
+            产出: {String(data.outputAssetId).slice(0, 8)}…
           </p>
         )}
       </div>
@@ -181,48 +182,33 @@ export function NodeInspector({
           {/* Run button */}
           <button
             onClick={() => onRunNode(node.id)}
-            disabled={
-              isRunning ||
-              status === "running"
-            }
+            disabled={isNodeRunning || status === "running"}
             style={{
               width: "100%",
               padding: "8px 0",
               borderRadius: 8,
               border: "none",
-              backgroundColor:
-                isRunning && runningNodeId === node.id
-                  ? "#f59e0b"
-                  : status === "done"
-                    ? "#22c55e"
-                    : "var(--color-accent)",
-              color: "#fff",
+              backgroundColor: "var(--color-accent)",
+              color: "var(--color-accent-on)",
               fontWeight: 600,
               fontSize: 13,
-              cursor:
-                isRunning || status === "running"
-                  ? "not-allowed"
-                  : "pointer",
-              opacity:
-                isRunning && runningNodeId !== node.id
-                  ? 0.4
-                  : 1,
+              cursor: isNodeRunning || status === "running" ? "not-allowed" : "pointer",
               transition: "background-color 0.2s",
             }}
           >
-            {isRunning && runningNodeId === node.id
-              ? `生成中 ${progress}%`
+            {isNodeRunning
+              ? `生成中 ${runProgress}%`
               : status === "running"
                 ? "排队中…"
                 : status === "done"
-                  ? "✅ 重新生成"
+                  ? "重新生成"
                   : status === "failed"
-                    ? "🔄 重试"
-                    : "▶ 运行"}
+                    ? "重试"
+                    : "运行"}
           </button>
 
           {/* Progress bar (this node only) */}
-          {isRunning && runningNodeId === node.id && (
+          {isNodeRunning && (
             <div
               style={{
                 width: "100%",
@@ -235,8 +221,8 @@ export function NodeInspector({
               <div
                 style={{
                   height: "100%",
-                  width: `${progress}%`,
-                  backgroundColor: "#f59e0b",
+                  width: `${runProgress}%`,
+                  backgroundColor: "var(--color-node-running)",
                   transition: "width 0.3s",
                 }}
               />
@@ -244,22 +230,9 @@ export function NodeInspector({
           )}
 
           {/* Error message */}
-          {runError && runningNodeId === node.id && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>
+          {!isNodeRunning && runError && (
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>
               {runError}
-            </p>
-          )}
-
-          {/* Job ID */}
-          {runningNodeId === node.id && (
-            <p
-              style={{
-                fontSize: 9,
-                color: "var(--color-text-muted)",
-                fontFamily: "monospace",
-              }}
-            >
-              Job: …{/* shown via SSE */}
             </p>
           )}
         </div>
@@ -296,6 +269,8 @@ export function NodeInspector({
         node={node}
         canvasId={canvasId}
         onUpdateNodeData={onUpdateNodeData}
+        onGraphAppend={onGraphAppend}
+        nodes={nodes}
       />
 
       {/* Delete button */}
@@ -312,9 +287,9 @@ export function NodeInspector({
               width: "100%",
               padding: "6px 0",
               borderRadius: 6,
-              border: "1px solid #ef444444",
+              border: "1px solid color-mix(in srgb, var(--color-danger) 27%, transparent)",
               backgroundColor: "transparent",
-              color: "#ef4444",
+              color: "var(--color-danger)",
               fontSize: 11,
               cursor: "pointer",
               opacity: 0.7,
@@ -327,7 +302,7 @@ export function NodeInspector({
               (e.currentTarget as HTMLButtonElement).style.opacity = "0.7";
             }}
           >
-            🗑 删除节点
+            <Trash2 className="size-3" /> 删除节点
           </button>
           <p style={{ fontSize: 9, color: "var(--color-text-muted)", marginTop: 4, textAlign: "center" }}>
             快捷键: Delete
@@ -569,16 +544,6 @@ function EditableField({
 
 // ── Upstream / Downstream relationships ─────────────────────────────
 
-const TYPE_ICONS: Record<string, string> = {
-  script: "📜",
-  character: "👤",
-  storyboard_cell: "🎬",
-  shot: "🎥",
-  image: "🖼️",
-  video: "▶️",
-  concat: "🔗",
-};
-
 function NodeRelations({
   nodeId,
   edges,
@@ -612,14 +577,13 @@ function NodeRelations({
     >
       {upstream.length > 0 && (
         <div>
-          <span style={{ fontSize: 10, color: "var(--color-accent)", fontWeight: 600 }}>
-            ↑ 上游 ({upstream.length})
+          <span style={{ fontSize: 10, color: "var(--color-ink-subtle)", fontWeight: 600 }}>
+            上游 ({upstream.length})
           </span>
           <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
             {upstream.map((n) => {
               const st = (n.data as Record<string, unknown>)?.status as string ?? "idle";
-              const stColor =
-                st === "done" ? "#22c55e" : st === "running" ? "#f59e0b" : st === "dirty" ? "#ef4444" : "#555";
+              const stColor = STATUS_COLOR[st] ?? STATUS_COLOR.idle;
               return (
                 <div
                   key={n.id}
@@ -631,8 +595,8 @@ function NodeRelations({
                     color: "var(--color-text-muted)",
                   }}
                 >
-                  <span style={{ color: stColor, fontSize: 6 }}>●</span>
-                  <span>{TYPE_ICONS[n.type ?? ""] ?? "?"}</span>
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", backgroundColor: stColor, flexShrink: 0 }} />
+                  <span>{NODE_TYPE_VISUALS[n.type as keyof typeof NODE_TYPE_VISUALS]?.label ?? "?"}</span>
                   <span style={{ color: "var(--color-text)" }}>{n.id.slice(0, 6)}…</span>
                 </div>
               );
@@ -643,14 +607,13 @@ function NodeRelations({
 
       {downstream.length > 0 && (
         <div>
-          <span style={{ fontSize: 10, color: "#22c55e", fontWeight: 600 }}>
-            ↓ 下游 ({downstream.length})
+          <span style={{ fontSize: 10, color: "var(--color-ink-subtle)", fontWeight: 600 }}>
+            下游 ({downstream.length})
           </span>
           <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
             {downstream.map((n) => {
               const st = (n.data as Record<string, unknown>)?.status as string ?? "idle";
-              const stColor =
-                st === "done" ? "#22c55e" : st === "running" ? "#f59e0b" : st === "dirty" ? "#ef4444" : "#555";
+              const stColor = STATUS_COLOR[st] ?? STATUS_COLOR.idle;
               return (
                 <div
                   key={n.id}
@@ -662,8 +625,8 @@ function NodeRelations({
                     color: "var(--color-text-muted)",
                   }}
                 >
-                  <span style={{ color: stColor, fontSize: 6 }}>●</span>
-                  <span>{TYPE_ICONS[n.type ?? ""] ?? "?"}</span>
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", backgroundColor: stColor, flexShrink: 0 }} />
+                  <span>{NODE_TYPE_VISUALS[n.type as keyof typeof NODE_TYPE_VISUALS]?.label ?? "?"}</span>
                   <span style={{ color: "var(--color-text)" }}>{n.id.slice(0, 6)}…</span>
                 </div>
               );
@@ -681,12 +644,10 @@ function NodeRelations({
 
 function CollapsibleSection({
   title,
-  icon,
   children,
   defaultOpen = true,
 }: {
   title: string;
-  icon?: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
 }) {
@@ -708,13 +669,13 @@ function CollapsibleSection({
           userSelect: "none",
         }}
       >
-        {icon && <span style={{ fontSize: 12 }}>{icon}</span>}
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-muted)" }}>
           {title}
         </span>
-        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--color-text-muted)" }}>
-          {open ? "▾" : "▸"}
-        </span>
+        <ChevronDown
+          size={11}
+          style={{ marginLeft: "auto", color: "var(--color-text-muted)", transition: "transform 0.15s", transform: open ? "none" : "rotate(-90deg)" }}
+        />
       </div>
       {open && (
         <div style={{ padding: "0 16px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -732,7 +693,7 @@ const BTN_PRIMARY: React.CSSProperties = {
   borderRadius: 6,
   border: "none",
   backgroundColor: "var(--color-accent)",
-  color: "#fff",
+  color: "var(--color-accent-on)",
   fontSize: 11,
   fontWeight: 600,
   cursor: "pointer",
@@ -781,10 +742,14 @@ function ExtendedSections({
   node,
   canvasId,
   onUpdateNodeData,
+  onGraphAppend,
+  nodes,
 }: {
   node: Node;
   canvasId?: string;
   onUpdateNodeData?: (nodeId: string, key: string, value: unknown) => void;
+  onGraphAppend?: (nodes: Node[], edges: Edge[]) => void;
+  nodes?: Node[];
 }) {
   const data = node.data as Record<string, unknown>;
   const type = node.type ?? "";
@@ -798,12 +763,57 @@ function ExtendedSections({
   const gridSplitMut = trpc.canvas.runGridSplit.useMutation();
   const storyPushMut = trpc.canvas.runStoryPush.useMutation();
   const audioMut = trpc.canvas.runAudioGeneration.useMutation();
+  const storyboard2ShotMut = trpc.canvas.runStoryboard2Shot.useMutation();
 
   return (
     <>
+      {/* Visible characters (shot nodes) — select whose front portraits feed
+          the first frame, for cross-shot character consistency. */}
+      {type === "shot" && (nodes ?? []).some((n) => n.type === "character") && (
+        <CollapsibleSection title="出场角色">
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {(nodes ?? [])
+              .filter((n) => n.type === "character")
+              .map((c) => {
+                const name =
+                  ((c.data as Record<string, unknown>).name as string) ?? c.id.slice(0, 6);
+                const checked = ((data.visibleCharIds as string[]) ?? []).includes(c.id);
+                return (
+                  <label
+                    key={c.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 11,
+                      color: "var(--color-text)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const current = new Set((data.visibleCharIds as string[]) ?? []);
+                        if (e.target.checked) current.add(c.id);
+                        else current.delete(c.id);
+                        onUpdateNodeData?.(node.id, "visibleCharIds", [...current]);
+                      }}
+                    />
+                    {name}
+                  </label>
+                );
+              })}
+          </div>
+          <p style={{ fontSize: 9, color: "var(--color-text-dim)", margin: "4px 0 0" }}>
+            选中角色的定妆图将作为首帧参考，保持跨镜头角色一致。
+          </p>
+        </CollapsibleSection>
+      )}
+
       {/* 3b. Lighting Control (shot nodes) */}
       {type === "shot" && (
-        <CollapsibleSection title="灯光控制" icon="💡">
+        <CollapsibleSection title="灯光控制">
           <div>
             <span style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginBottom: 2 }}>
               主灯位置
@@ -868,7 +878,7 @@ function ExtendedSections({
 
       {/* 3c. Focus/DOF Control (shot nodes) */}
       {type === "shot" && (
-        <CollapsibleSection title="焦点/景深" icon="🎯">
+        <CollapsibleSection title="焦点/景深">
           <div>
             <span style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginBottom: 2 }}>
               焦点位置 (点击设置)
@@ -911,7 +921,7 @@ function ExtendedSections({
 
       {/* 3d. Character Three-View Section */}
       {type === "character" && (
-        <CollapsibleSection title="三视图生成" icon="👤">
+        <CollapsibleSection title="三视图生成">
           <div style={{ display: "flex", gap: 4 }}>
             <button
               style={BTN_SECONDARY}
@@ -942,22 +952,25 @@ function ExtendedSections({
           </div>
           {/* Status indicators */}
           <div style={{ display: "flex", gap: 8, fontSize: 10, color: "var(--color-text-muted)" }}>
-            <span>正面: {data.frontAssetId ? "✅" : "○"}</span>
-            <span>侧面: {data.sideAssetId ? "✅" : "○"}</span>
-            <span>背面: {data.backAssetId ? "✅" : "○"}</span>
+            <span>正面: {data.frontAssetId ? "已设" : "未设"}</span>
+            <span>侧面: {data.sideAssetId ? "已设" : "未设"}</span>
+            <span>背面: {data.backAssetId ? "已设" : "未设"}</span>
           </div>
           {characterViewMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 生成中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>生成中…</p>
           )}
           {characterViewMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {characterViewMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {characterViewMut.error.message}</p>
           )}
         </CollapsibleSection>
       )}
 
       {/* 3e. Auto-Storyboard (script nodes) */}
       {type === "script" && (data.content as string) && (
-        <CollapsibleSection title="自动分镜" icon="🎬">
+        <CollapsibleSection title="智能分镜">
+          <p style={{ fontSize: 10, color: "var(--color-text-muted)", margin: "0 0 8px", lineHeight: 1.5 }}>
+            调用 ViMax StoryboardArtist，与 CLI 管线相同的智能分镜能力。若画布已有角色节点，会自动纳入分镜设计。
+          </p>
           <button
             style={BTN_PRIMARY}
             disabled={script2StoryboardMut.isPending}
@@ -965,20 +978,51 @@ function ExtendedSections({
               script2StoryboardMut.mutate({ canvas_id: cid, node_id: node.id });
             }}
           >
-            自动生成分镜
+            生成智能分镜
           </button>
           {script2StoryboardMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 生成中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>生成中…</p>
           )}
           {script2StoryboardMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {script2StoryboardMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {script2StoryboardMut.error.message}</p>
+          )}
+        </CollapsibleSection>
+      )}
+
+      {/* Expand to Shot (storyboard_cell nodes) — mirrors idea2video's
+          decompose_visual_description: turn one storyboard brief into a
+          fully-populated shot node, appended live to the canvas. */}
+      {type === "storyboard_cell" && ((data.shotBrief as string) ?? "").trim() && (
+        <CollapsibleSection title="展开为镜头">
+          <button
+            style={BTN_PRIMARY}
+            disabled={storyboard2ShotMut.isPending}
+            onClick={() => {
+              storyboard2ShotMut.mutate(
+                { canvas_id: cid, node_id: node.id },
+                {
+                  onSuccess: (result) => {
+                    onUpdateNodeData?.(node.id, "status", "done");
+                    onGraphAppend?.([result.shot_node], [result.edge]);
+                  },
+                },
+              );
+            }}
+          >
+            展开为镜头
+          </button>
+          {storyboard2ShotMut.isPending && (
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>展开中…</p>
+          )}
+          {storyboard2ShotMut.isError && (
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {storyboard2ShotMut.error.message}</p>
           )}
         </CollapsibleSection>
       )}
 
       {/* 3f. Multi-Camera Grid (shot nodes) */}
       {type === "shot" && (
-        <CollapsibleSection title="多机位宫格" icon="📹">
+        <CollapsibleSection title="多机位宫格">
           <div style={{ display: "flex", gap: 4 }}>
             <button
               style={BTN_SECONDARY}
@@ -1000,17 +1044,17 @@ function ExtendedSections({
             </button>
           </div>
           {multiCameraMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 生成中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>生成中…</p>
           )}
           {multiCameraMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {multiCameraMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {multiCameraMut.error.message}</p>
           )}
         </CollapsibleSection>
       )}
 
       {/* 3g. Motion Prediction (image nodes with output) */}
       {type === "image" && data.outputAssetId && (
-        <CollapsibleSection title="画面推演" icon="🔮">
+        <CollapsibleSection title="画面推演">
           <div style={{ display: "flex", gap: 4 }}>
             <button
               style={BTN_SECONDARY}
@@ -1032,17 +1076,17 @@ function ExtendedSections({
             </button>
           </div>
           {motionPredictionMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 推演中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>推演中…</p>
           )}
           {motionPredictionMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {motionPredictionMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {motionPredictionMut.error.message}</p>
           )}
         </CollapsibleSection>
       )}
 
       {/* 3h. Grid Split (image nodes with output) */}
       {type === "image" && data.outputAssetId && (
-        <CollapsibleSection title="宫格切分" icon="🔲">
+        <CollapsibleSection title="宫格切分">
           <div style={{ display: "flex", gap: 4 }}>
             <button
               style={BTN_SECONDARY}
@@ -1064,17 +1108,101 @@ function ExtendedSections({
             </button>
           </div>
           {gridSplitMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 切分中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>切分中…</p>
           )}
           {gridSplitMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {gridSplitMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {gridSplitMut.error.message}</p>
           )}
+        </CollapsibleSection>
+      )}
+
+      {/* 3j. Variants (image nodes) — generate N, pick the best */}
+      {type === "image" && (
+        <CollapsibleSection title="变体择优">
+          <VariantGallery
+            canvasId={cid}
+            nodeId={node.id}
+            variants={(data.variants as VariantEntry[] | undefined) ?? []}
+            currentOutputAssetId={data.outputAssetId as string | undefined}
+          />
+        </CollapsibleSection>
+      )}
+
+      {/* 3k. Image kind presets (e-commerce + creative asset flavors) */}
+      {type === "image" && (
+        <CollapsibleSection title="图片预设">
+          <label style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginBottom: 2 }}>
+            用途类型
+          </label>
+          <select
+            value={(data.kind as string) ?? "generic"}
+            onChange={(e) => {
+              const preset = getImageKindPreset(e.target.value);
+              onUpdateNodeData?.(node.id, "kind", e.target.value);
+              if (preset) onUpdateNodeData?.(node.id, "size", preset.size);
+            }}
+            style={SELECT_STYLE}
+          >
+            <option value="generic">通用</option>
+            <optgroup label="电商">
+              <option value="product">商品图</option>
+              <option value="scene">场景图</option>
+              <option value="model">模特图</option>
+              <option value="ad">广告图</option>
+            </optgroup>
+            <optgroup label="创意素材">
+              {IMAGE_KIND_PRESETS.map((p) => (
+                <option key={p.kind} value={p.kind}>
+                  {p.label}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+
+          <label style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginTop: 6, marginBottom: 2 }}>
+            画幅比例
+          </label>
+          <select
+            value={(data.aspectRatio as string) ?? ""}
+            onChange={(e) => {
+              const preset = getAspectRatioPreset(e.target.value);
+              onUpdateNodeData?.(node.id, "aspectRatio", e.target.value);
+              if (preset) onUpdateNodeData?.(node.id, "size", preset.size);
+            }}
+            style={SELECT_STYLE}
+          >
+            <option value="">自定义</option>
+            {ECOMMERCE_ASPECT_RATIOS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+
+          <label style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginTop: 6, marginBottom: 2 }}>
+            场景/背景
+          </label>
+          <select
+            value={(data.scene as string) ?? ""}
+            onChange={(e) => onUpdateNodeData?.(node.id, "scene", e.target.value)}
+            style={SELECT_STYLE}
+          >
+            <option value="">无</option>
+            {ECOMMERCE_SCENES.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          <p style={{ fontSize: 9, color: "var(--color-text-dim)", margin: "4px 0 0" }}>
+            场景预设会在生成时自动并入提示词。
+          </p>
         </CollapsibleSection>
       )}
 
       {/* 3i. Story Push (shot nodes) */}
       {type === "shot" && (
-        <CollapsibleSection title="剧情推演" icon="📖">
+        <CollapsibleSection title="剧情推演">
           <button
             style={BTN_PRIMARY}
             disabled={storyPushMut.isPending}
@@ -1085,17 +1213,17 @@ function ExtendedSections({
             推演 4 帧
           </button>
           {storyPushMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 推演中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>推演中…</p>
           )}
           {storyPushMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {storyPushMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {storyPushMut.error.message}</p>
           )}
         </CollapsibleSection>
       )}
 
       {/* 3j. Audio Generation (shot nodes with audioDesc) */}
       {type === "shot" && (data.audioDesc as string) && (
-        <CollapsibleSection title="音频生成" icon="🔊">
+        <CollapsibleSection title="音频生成">
           <button
             style={BTN_PRIMARY}
             disabled={audioMut.isPending}
@@ -1106,17 +1234,20 @@ function ExtendedSections({
             生成音频
           </button>
           {audioMut.isPending && (
-            <p style={{ fontSize: 10, color: "#f59e0b" }}>⏳ 生成中…</p>
+            <p style={{ fontSize: 10, color: "var(--color-node-running)" }}>生成中…</p>
           )}
           {audioMut.isError && (
-            <p style={{ fontSize: 10, color: "#ef4444" }}>错误: {audioMut.error.message}</p>
+            <p style={{ fontSize: 10, color: "var(--color-danger)" }}>错误: {audioMut.error.message}</p>
           )}
         </CollapsibleSection>
       )}
 
       {/* 3k. Download (video/concat nodes with output) */}
       {(type === "video" || type === "concat") && data.outputAssetId && (
-        <CollapsibleSection title="下载" icon="💾" defaultOpen={false}>
+        <CollapsibleSection
+          title={type === "concat" ? "下载成片" : "下载"}
+          defaultOpen={type === "concat" || data.status === "done"}
+        >
           <DownloadButton canvasId={cid} nodeId={node.id} />
         </CollapsibleSection>
       )}
@@ -1163,7 +1294,7 @@ function FocusPointPicker({
           height: 8,
           borderRadius: "50%",
           backgroundColor: "var(--color-accent)",
-          border: "2px solid #fff",
+          border: "2px solid var(--color-surface-1)",
           transform: "translate(-50%, -50%)",
           pointerEvents: "none",
         }}
@@ -1220,7 +1351,7 @@ function ModelFieldSelect({
       >
         {models.map((m) => (
           <option key={m.id} value={m.id}>
-            {m.name} {m.isDefault ? "★" : ""}
+            {m.name} {m.isDefault ? "（默认）" : ""}
           </option>
         ))}
         {models.length === 0 && (
@@ -1260,7 +1391,7 @@ function DownloadButton({ canvasId, nodeId }: { canvasId: string; nodeId: string
         {isLoading ? "获取链接…" : "下载"}
       </button>
       {error && (
-        <p style={{ fontSize: 10, color: "#ef4444", marginTop: 4 }}>错误: {error.message}</p>
+        <p style={{ fontSize: 10, color: "var(--color-danger)", marginTop: 4 }}>错误: {error.message}</p>
       )}
       {data?.filename && (
         <p style={{ fontSize: 10, color: "var(--color-text-muted)", marginTop: 4 }}>

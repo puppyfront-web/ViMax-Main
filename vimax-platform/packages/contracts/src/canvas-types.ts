@@ -7,6 +7,7 @@ export const CANVAS_NODE_TYPES = [
   "shot",
   "image",
   "video",
+  "audio",
   "concat",
 ] as const;
 
@@ -88,6 +89,9 @@ export interface CharacterNodeData {
 export interface StoryboardCellNodeData {
   shotBrief: string;
   cameraIdx: number;
+  /** Optional audio/dialogue cue carried over from the storyboard; forwarded
+   * into the decomposed shot node. */
+  audioDesc?: string;
 }
 
 export interface ShotNodeData {
@@ -98,6 +102,10 @@ export interface ShotNodeData {
   variationType: "large" | "medium" | "small";
   ffVisCharIdxs: number[];
   lfVisCharIdxs: number[];
+  /** IDs of character nodes whose portraits (front view) are fed as
+   * references when generating this shot's first frame — drives cross-shot
+   * character consistency (mirrors idea2video's ff_vis_char_idxs). */
+  visibleCharIds?: string[];
   // ── Lighting control (电影级灯光控制) ──
   keyLightPosition?: string;
   keyLightIntensity?: number;   // 0-100
@@ -117,12 +125,137 @@ export interface ImageNodeData {
   seed?: number;
   /** Direct reference assets (in addition to upstream node outputs). */
   referenceAssetIds?: string[];
+  /** E-commerce domain kind — drives icon, defaults and preset UI. */
+  kind?: ImageNodeKind;
+  /** Selected e-commerce aspect-ratio preset id (see ECOMMERCE_ASPECT_RATIOS). */
+  aspectRatio?: string;
+  /** Selected e-commerce scene preset id (see ECOMMERCE_SCENES). */
+  scene?: string;
+}
+
+/**
+ * Domain flavor of an image node. "generic" is the plain text-to-image node.
+ * E-commerce kinds (product/scene/model/ad) and creative-asset kinds
+ * (portrait/environment/character_design/prop) only differ in the style
+ * fragment folded into the prompt at generation time.
+ */
+export type ImageNodeKind =
+  | "generic"
+  | "product"
+  | "scene"
+  | "model"
+  | "ad"
+  | "portrait"
+  | "environment"
+  | "character_design"
+  | "prop";
+
+// ── E-commerce presets ─────────────────────────────────────────────
+
+export interface AspectRatioPreset {
+  id: string;
+  label: string;
+  /** Pixel size passed to the model as `size`. */
+  size: string;
+}
+
+export interface ScenePreset {
+  id: string;
+  label: string;
+  /** Prompt fragment appended to describe the scene/background. */
+  prompt: string;
+}
+
+/** Common e-commerce aspect ratios (主图 / 详情 / Banner / 信息流). */
+export const ECOMMERCE_ASPECT_RATIOS: readonly AspectRatioPreset[] = [
+  { id: "sq-1-1", label: "主图 1:1", size: "1024x1024" },
+  { id: "pt-3-4", label: "详情 3:4", size: "1024x1536" },
+  { id: "ls-4-3", label: "横版 4:3", size: "1536x1152" },
+  { id: "bn-16-9", label: "Banner 16:9", size: "1536x864" },
+  { id: "fv-9-16", label: "信息流 9:16", size: "864x1536" },
+];
+
+/** Scene/background presets for product photography. */
+export const ECOMMERCE_SCENES: readonly ScenePreset[] = [
+  { id: "studio", label: "棚拍纯色背景", prompt: "professional studio photography, clean seamless background, soft even lighting, high-end product shot" },
+  { id: "clean-white", label: "纯白电商底", prompt: "pure white background, bright e-commerce product photo, crisp shadows, centered composition" },
+  { id: "home", label: "家居场景", prompt: "placed in a cozy modern home interior, natural window light, lifestyle product photography" },
+  { id: "outdoor", label: "户外自然", prompt: "outdoor natural setting, golden hour sunlight, fresh and vibrant, lifestyle product photography" },
+  { id: "beach", label: "海滩度假", prompt: "on a sunny beach, golden sand and ocean bokeh, summer lifestyle product photography" },
+  { id: "minimal", label: "极简几何", prompt: "minimalist geometric set, pastel tones, soft studio shadows, modern product photography" },
+];
+
+/** Style preset per creative-asset image kind (人物/场景/角色/道具素材). */
+export interface ImageKindPreset {
+  kind: ImageNodeKind;
+  label: string;
+  /** Style fragment appended to the user prompt at generation time. */
+  prompt: string;
+  /** Suggested size applied when the kind is picked. */
+  size: string;
+}
+
+export const IMAGE_KIND_PRESETS: readonly ImageKindPreset[] = [
+  {
+    kind: "portrait",
+    label: "人物形象",
+    prompt: "photorealistic portrait of a person, expressive face, professional photography lighting, shallow depth of field, high detail",
+    size: "1024x1536",
+  },
+  {
+    kind: "environment",
+    label: "场景概念",
+    prompt: "cinematic environment concept art, atmospheric depth, production design, wide composition, film grade",
+    size: "1600x900",
+  },
+  {
+    kind: "character_design",
+    label: "角色设定",
+    prompt: "character design reference sheet, full body front view, plain clean background, consistent character design, high detail",
+    size: "1536x1152",
+  },
+  {
+    kind: "prop",
+    label: "道具素材",
+    prompt: "single prop asset, centered on a plain clean background, studio lighting, crisp detail",
+    size: "1024x1024",
+  },
+];
+
+export function getImageKindPreset(kind: string | undefined): ImageKindPreset | undefined {
+  return IMAGE_KIND_PRESETS.find((p) => p.kind === kind);
+}
+
+export function getAspectRatioPreset(id: string | undefined): AspectRatioPreset | undefined {
+  return ECOMMERCE_ASPECT_RATIOS.find((p) => p.id === id);
+}
+
+export function getScenePreset(id: string | undefined): ScenePreset | undefined {
+  return ECOMMERCE_SCENES.find((p) => p.id === id);
+}
+
+/**
+ * The prompt actually sent to the model: the user prompt plus the kind's
+ * style fragment and the scene preset fragment (if any). Used for both
+ * generation and the cache key so different kind/scene combinations never
+ * collapse onto one cached result.
+ */
+export function composeImagePrompt(prompt: string, sceneId?: string, kind?: string): string {
+  const base = prompt.trim();
+  const kindPreset = getImageKindPreset(kind);
+  const scene = getScenePreset(sceneId);
+  return [base, kindPreset?.prompt, scene?.prompt].filter(Boolean).join(", ");
 }
 
 export interface VideoNodeData {
   motionPreset: string;
   durationSec: number;
   modelId: string;
+  /** Optional generation params surfaced by the video console. */
+  aspectRatio?: string;      // VIDEO_ASPECT_RATIOS preset id
+  fps?: number;              // 16 | 24
+  negativePrompt?: string;
+  stylePresetId?: string;    // VIDEO_STYLE_PRESETS preset id
 }
 
 export interface ConcatNodeData {
@@ -178,6 +311,56 @@ export interface CanvasSnapshot {
   canvas: Canvas;
   nodes: CanvasNode[];
   edges: CanvasEdge[];
+}
+
+// ── Runnable node types (shared web/api execution contract) ────────
+
+/**
+ * Node types that produce an output asset when run. Must mirror the
+ * `switch` in `runNode` (node-executor.service.ts): nodes outside this set
+ * (e.g. `script`, `storyboard_cell`) never run, so an edge from them is a
+ * logical grouping — not a data dependency.
+ */
+export const RUNNABLE_NODE_TYPES = [
+
+  "image",
+  "character",
+  "shot",
+  "video",
+  "concat",
+  "audio",
+] as const;
+
+export type RunnableNodeType = (typeof RUNNABLE_NODE_TYPES)[number];
+
+export const RUNNABLE_NODE_TYPE_SET: ReadonlySet<string> = new Set(RUNNABLE_NODE_TYPES);
+
+// ── Manual connection rules ────────────────────────────────────────
+
+/**
+ * Legal node-type pairs for manual connections: source type → the target
+ * types its output can feed. Mirrors what the executors consume: image/shot
+ * nodes use any upstream asset as an i2i reference, video consumes
+ * first/last-frame bindings, concat requires video inputs, script/storyboard_cell
+ * only organize downstream structure.
+ */
+export const VALID_CONNECTION_TARGETS: Record<CanvasNodeType, readonly CanvasNodeType[]> = {
+  script: ["storyboard_cell", "character"],
+  character: ["shot", "image"],
+  storyboard_cell: ["shot"],
+  shot: ["image", "shot", "video", "audio"],
+  image: ["image", "shot", "video", "audio"],
+  video: ["video", "concat", "audio"],
+  concat: [],
+  audio: [],
+};
+
+export function isValidConnectionType(sourceType: string, targetType: string): boolean {
+  return (
+    VALID_CONNECTION_TARGETS[sourceType as CanvasNodeType]?.includes(
+      targetType as CanvasNodeType,
+    ) ?? false
+  );
 }
 
 // ── Node → upstream dependency mapping (for DAG execution) ─────────
@@ -252,8 +435,47 @@ export interface Script2StoryboardCell {
   ffDesc: string;
   lfDesc: string;
   motionDesc: string;
+  audioDesc?: string;
+  shotIdx?: number;
 }
 
 export interface Script2StoryboardResult {
   cells: Script2StoryboardCell[];
+}
+
+// ── Workflow templates ─────────────────────────────────────────────
+
+export type TemplateCategory = "ecommerce" | "short-drama" | "ad" | "general";
+
+/** A node produced by instantiating a template (client-facing shape). */
+export interface InstantiatedNode {
+  id: string;
+  type: CanvasNodeType;
+  position: { x: number; y: number };
+  data: Record<string, unknown>;
+}
+
+/** An edge produced by instantiating a template (client-facing shape). */
+export interface InstantiatedEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+}
+
+/** Template metadata for the picker — omits the graph payload. */
+export interface TemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  category: TemplateCategory;
+  nodeCount: number;
+}
+
+/** One generated variant of an image node, gathered in a gallery. */
+export interface VariantEntry {
+  assetId: string;
+  jobId: string;
+  index: number;
 }

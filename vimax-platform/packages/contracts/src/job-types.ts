@@ -96,6 +96,10 @@ export interface ImageJobOutput {
 export const VIDEO_JOB_TYPES = ["shot.video"] as const;
 export type VideoJobType = (typeof VIDEO_JOB_TYPES)[number];
 
+/** Studio-originated standalone video jobs (video studio page). */
+export const VIDEO_STUDIO_JOB_TYPES = ["video.t2v", "video.i2v"] as const;
+export type VideoStudioJobType = (typeof VIDEO_STUDIO_JOB_TYPES)[number];
+
 export const CONCAT_JOB_TYPES = ["concat.videos"] as const;
 export type ConcatJobType = (typeof CONCAT_JOB_TYPES)[number];
 
@@ -111,11 +115,13 @@ export interface VideoJobInput {
   last_frame_storage_key?: string;
   duration_sec?: number;
   resolution?: string;
+  aspect_ratio?: string;
+  fps?: number;
 }
 
 export interface VideoJobPayload {
   job_id: string;
-  job_type: VideoJobType;
+  job_type: VideoJobType | VideoStudioJobType;
   model_id: string;
   credential: {
     class_path: string;
@@ -249,6 +255,82 @@ export type VideoMotionPresetId = (typeof VIDEO_MOTION_PRESETS)[number]["id"];
 
 export function getMotionPreset(id: string) {
   return VIDEO_MOTION_PRESETS.find((p) => p.id === id);
+}
+
+// ── Video Style Presets (视觉风格预设) ──────────────────────────────
+
+export interface VideoStylePreset {
+  id: string;
+  label: string;
+  /** Style fragment appended to the user prompt at generation time. */
+  prompt: string;
+}
+
+/** Visual style presets for video generation (视频风格 12 选 1). */
+export const VIDEO_STYLE_PRESETS: readonly VideoStylePreset[] = [
+  { id: "none", label: "默认", prompt: "" },
+  { id: "cyberpunk", label: "赛博幻境", prompt: "cyberpunk aesthetic, deep-blue neon streets, volumetric lighting, 8k hyper-realistic rendering" },
+  { id: "anime", label: "日漫奇旅", prompt: "japanese anime style, cel shading, vibrant colors, expressive key animation" },
+  { id: "cinematic", label: "电影质感", prompt: "cinematic film look, anamorphic lens flare, dramatic color grading, shallow depth of field" },
+  { id: "3d-animation", label: "3D 动画", prompt: "polished 3D animation style, soft global illumination, pixar-like character design" },
+  { id: "vaporwave", label: "蒸汽波", prompt: "vaporwave aesthetic, retro synth gradients, chromatic aberration, 80s nostalgia" },
+  { id: "neo-chinese", label: "新中式科幻", prompt: "neo-chinese sci-fi aesthetic, ink-wash meets futuristic tech, oriental minimalism" },
+  { id: "documentary", label: "写实纪录", prompt: "documentary realism, natural lighting, handheld authenticity, 35mm texture" },
+  { id: "watercolor", label: "水彩插画", prompt: "watercolor illustration style, flowing pigments, soft paper texture, artistic brush strokes" },
+  { id: "film-noir", label: "黑白胶片", prompt: "black-and-white film noir, high contrast monochrome, 1950s grain, dramatic shadows" },
+  { id: "claymation", label: "黏土定格", prompt: "claymation stop-motion style, handmade plasticine texture, tactile imperfections" },
+  { id: "dark-epic", label: "暗黑史诗", prompt: "dark epic fantasy, moody atmosphere, monumental scale, rim-lit silhouettes" },
+];
+
+export function getVideoStylePreset(id: string | undefined) {
+  return VIDEO_STYLE_PRESETS.find((p) => p.id === id);
+}
+
+// ── Video Aspect Ratios (视频画幅) ──────────────────────────────────
+
+export interface VideoAspectRatioPreset {
+  id: string;
+  label: string;
+  /** Ratio string passed to the provider (e.g. "16:9"). */
+  ratio: string;
+}
+
+/** Aspect ratios for video generation. */
+export const VIDEO_ASPECT_RATIOS: readonly VideoAspectRatioPreset[] = [
+  { id: "16-9", label: "16:9 横屏", ratio: "16:9" },
+  { id: "9-16", label: "9:16 竖屏", ratio: "9:16" },
+  { id: "2-35-1", label: "2.35:1 宽幅", ratio: "2.35:1" },
+  { id: "1-1", label: "1:1 正方", ratio: "1:1" },
+];
+
+export function getVideoAspectRatio(id: string | undefined) {
+  return VIDEO_ASPECT_RATIOS.find((p) => p.id === id);
+}
+
+/**
+ * Compose the prompt actually sent to the video model: user prompt plus
+ * style preset fragment, motion preset description and motion intensity
+ * (the provider API takes camera/style as prompt text, not params).
+ */
+export function composeVideoPrompt(input: {
+  prompt: string;
+  stylePresetId?: string;
+  motionPresetId?: string;
+  motionIntensity?: number;
+  negativePrompt?: string;
+}): string {
+  const style = getVideoStylePreset(input.stylePresetId);
+  const motion = getMotionPreset(input.motionPresetId ?? "");
+  const parts = [input.prompt.trim()];
+  if (style?.prompt) parts.push(style.prompt);
+  if (motion) parts.push(`Camera movement: ${motion.label}: ${motion.description}`);
+  if (input.motionIntensity != null) {
+    parts.push(`Motion intensity: ${input.motionIntensity}/10`);
+  }
+  if (input.negativePrompt?.trim()) {
+    parts.push(`Avoid: ${input.negativePrompt.trim()}`);
+  }
+  return parts.filter(Boolean).join(", ");
 }
 
 // ── Video Model Descriptors ────────────────────────────────────────

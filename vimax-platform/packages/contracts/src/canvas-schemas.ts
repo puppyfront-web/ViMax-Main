@@ -251,3 +251,22 @@ export const StoryPushInputSchema = z.object({
 });
 
 export type StoryPushInput = z.infer<typeof StoryPushInputSchema>;
+
+// ── Auto Pipeline (一键自动生成) ────────────────────────────────────
+
+export const AutoPipelineInputSchema = z.object({
+  canvas_id: z.string().uuid(),
+  script_node_id: z.string().uuid().optional(),
+  concurrency: z.number().int().min(1).max(5).optional().default(2),
+  /** Delete every generated node (storyboard→shot→image→video→concat) and
+   * rebuild the chain from the script before running. */
+  regenerate: z.boolean().optional(),
+});
+
+export type AutoPipelineInput = z.infer<typeof AutoPipelineInputSchema>;
+
+export const AutoPipelineOutputSchema = z.object({
+  run_id: z.string().uuid(),
+});
+
+export type AutoPipelineOutput = z.infer<typeof AutoPipelineOutputSchema>;

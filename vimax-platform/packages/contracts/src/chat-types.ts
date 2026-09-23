@@ -1,6 +1,8 @@
 // ── Chat / Agent Conversation Types ─────────────────────────────────
 // Shared types for the AI chat panel and agent communication layer.
 
+import type { CanvasNodeStatus, VariantEntry } from "./canvas-types.js";
+
 // ── Conversation ────────────────────────────────────────────────────
 
 export interface AgentConversation {
@@ -61,11 +63,21 @@ export interface MessageReference {
 
 // ── WebSocket Message Protocol ──────────────────────────────────────
 
+export type PipelineStage = "storyboard" | "shot" | "image" | "video" | "concat";
+
 /** Client → Server messages */
 export type ClientWsMessage =
   | { type: "chat.send"; conversationId: string; content: string; modelId?: string }
   | { type: "chat.stop"; conversationId: string }
-  | { type: "chat.subscribe"; canvasId: string };
+  | { type: "chat.subscribe"; canvasId: string }
+  | { type: "pipeline.cancel"; runId: string; canvasId: string }
+  | {
+      type: "canvas.presence";
+      canvasId: string;
+      /** Cursor position in flow coordinates; null when the pointer left. */
+      cursor: { x: number; y: number } | null;
+      selectedNodeIds: string[];
+    };
 
 /** Server → Client messages */
 export type ServerWsMessage =
@@ -77,10 +89,42 @@ export type ServerWsMessage =
   | { type: "chat.canvas_mutation"; conversationId: string; mutation: CanvasMutation }
   | { type: "chat.complete"; conversationId: string; message: AgentMessage }
   | { type: "chat.error"; conversationId: string; error: string }
+  | { type: "pipeline.stage_start"; runId: string; canvasId: string; stage: PipelineStage; nodeIds: string[] }
+  | { type: "pipeline.stage_progress"; runId: string; canvasId: string; stage: PipelineStage; done: number; total: number }
+  | { type: "pipeline.stage_done"; runId: string; canvasId: string; stage: PipelineStage }
+  | { type: "pipeline.node_failed"; runId: string; canvasId: string; stage: PipelineStage; nodeId: string; error: string }
+  | { type: "pipeline.finished"; runId: string; canvasId: string; summary: { succeeded: number; failed: number; cancelled?: boolean } }
   // Reuse existing job progress events via WebSocket
   | { type: "job.progress"; jobId: string; progress: number }
   | { type: "job.completed"; jobId: string; outputAssetId: string }
-  | { type: "job.failed"; jobId: string; error: string };
+  | { type: "job.failed"; jobId: string; error: string }
+  // Live node status — broadcast to everyone viewing the canvas so the
+  // reactive cascade (auto re-run of stale downstream nodes) is visible.
+  | {
+      type: "canvas.node_status";
+      canvasId: string;
+      nodeId: string;
+      status: CanvasNodeStatus;
+      outputAssetId?: string | null;
+      jobId?: string | null;
+      /** Present when a variant gallery update accompanies the status change. */
+      variants?: VariantEntry[];
+    }
+  // Nodes were deleted server-side (e.g. pipeline regeneration) — every
+  // viewer must drop them (and their edges) from the local graph.
+  | { type: "canvas.nodes_removed"; canvasId: string; nodeIds: string[] }
+  // Realtime presence — the server relays the sender's pointer/selection to
+  // everyone else in the canvas room (never echoed back to the sender).
+  | {
+      type: "canvas.presence";
+      canvasId: string;
+      userId: string;
+      name: string;
+      color: string;
+      cursor: { x: number; y: number } | null;
+      selectedNodeIds: string[];
+    }
+  | { type: "canvas.presence_leave"; canvasId: string; userId: string };
 
 // ── Canvas Mutation (Agent → Frontend) ──────────────────────────────
 

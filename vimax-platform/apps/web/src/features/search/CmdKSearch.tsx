@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from "react"
 import { useRouter } from "next/navigation";
 import { cn } from "@vimax/ui";
 import { trpc } from "@/lib/trpc/client";
-import { Search, FileText, Image, Film, Settings, Home, Plus, ArrowRight } from "lucide-react";
+import { Search, FileText, Image, Film, Settings, Home, Plus, ArrowRight, ArrowDown, ArrowUp, CornerDownLeft } from "lucide-react";
 
 interface SearchItem {
   id: string;
@@ -182,9 +182,23 @@ export function CmdKSearch() {
 
         {/* Footer */}
         <div className="flex items-center gap-4 px-4 h-8 border-t border-[var(--color-border)] text-[10px] text-[var(--color-text-dim)]">
-          <span>↑↓ 导航</span>
-          <span>↵ 选择</span>
-          <span>ESC 关闭</span>
+          <span className="flex items-center gap-1.5">
+            <span className="flex items-center rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1 py-px">
+              <ArrowUp className="size-2.5" />
+              <ArrowDown className="size-2.5" />
+            </span>
+            导航
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="flex items-center rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1 py-px">
+              <CornerDownLeft className="size-2.5" />
+            </span>
+            选择
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1 py-px font-mono">ESC</span>
+            关闭
+          </span>
         </div>
       </div>
     </div>

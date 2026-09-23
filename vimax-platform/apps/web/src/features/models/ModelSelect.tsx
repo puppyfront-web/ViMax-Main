@@ -93,7 +93,7 @@ export function ModelSelect({
               {providerModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
-                  {m.isDefault ? " ★" : ""}
+                  {m.isDefault ? "（默认）" : ""}
                 </option>
               ))}
             </optgroup>

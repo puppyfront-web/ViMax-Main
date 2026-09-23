@@ -148,7 +148,7 @@ export function WelcomeOverlay() {
           {isLast ? (
             <button
               onClick={close}
-              className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
+              className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-[var(--color-accent-on)] hover:bg-[var(--color-accent-hover)] transition-colors"
             >
               <Sparkles className="size-4" />
               开始创作
@@ -156,7 +156,7 @@ export function WelcomeOverlay() {
           ) : (
             <button
               onClick={nextStep}
-              className="flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
+              className="flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-[var(--color-accent-on)] hover:bg-[var(--color-accent-hover)] transition-colors"
             >
               下一步
               <ChevronRight className="size-4" />

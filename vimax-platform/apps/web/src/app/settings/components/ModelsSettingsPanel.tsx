@@ -4,14 +4,14 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { Button, Badge, Dialog, useToast } from "@vimax/ui";
 import type { ModelType } from "@vimax/contracts";
-import { Plus, Pencil, Trash2, Cpu } from "lucide-react";
+import { Plus, Pencil, Trash2, Cpu, Type, Image as ImageIcon, Clapperboard } from "lucide-react";
 
 // ── Model Type Tabs ────────────────────────────────────────────────────
 
-const MODEL_TYPE_TABS: { type: ModelType; label: string; icon: string }[] = [
-  { type: "text", label: "文本模型", icon: "💬" },
-  { type: "image", label: "图像模型", icon: "🖼️" },
-  { type: "video", label: "视频模型", icon: "▶️" },
+const MODEL_TYPE_TABS: { type: ModelType; label: string; icon: typeof Type }[] = [
+  { type: "text", label: "文本模型", icon: Type },
+  { type: "image", label: "图像模型", icon: ImageIcon },
+  { type: "video", label: "视频模型", icon: Clapperboard },
 ];
 
 // ── Model Form Fields ──────────────────────────────────────────────────
@@ -158,7 +158,7 @@ export function ModelsSettingsPanel() {
                 : "var(--color-text-muted)",
             }}
           >
-            <span>{tab.icon}</span>
+            <tab.icon className="size-3.5" />
             {tab.label}
           </button>
         ))}

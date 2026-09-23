@@ -1,11 +1,12 @@
 /* ═══════════════════════════════════════════════════════════════════
    ViMax Design Tokens — Border Radius
-   LibLib-style rounded pill inputs + ComfyUI functional corners
+   System: soft/tactile. Chips/tags are full pills; inputs & buttons 10px;
+   cards & nodes 14px; modals 20px.
    ═══════════════════════════════════════════════════════════════════ */
 
 :root {
   --radius-none: 0;
-  --radius-2xs: 2px;
+  --radius-2xs: 3px;
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -17,14 +18,14 @@
   --radius-full: 9999px;
 
   /* Semantic radius tokens */
-  --radius-input: var(--radius-lg);        /* Inputs: 10px — LibLib pill-ish */
-  --radius-button: var(--radius-md);       /* Buttons: 8px */
-  --radius-button-lg: var(--radius-lg);    /* Large buttons: 10px */
-  --radius-card: var(--radius-xl);         /* Cards: 12px */
+  --radius-input: var(--radius-lg);        /* Inputs: 10px */
+  --radius-button: var(--radius-lg);       /* Buttons: 10px */
+  --radius-button-lg: var(--radius-xl);    /* Large buttons: 12px */
+  --radius-card: 14px;                     /* Cards & nodes: 14px */
   --radius-card-lg: var(--radius-2xl);     /* Large cards: 16px */
-  --radius-modal: var(--radius-2xl);       /* Modals: 16px */
+  --radius-modal: var(--radius-3xl);       /* Modals: 20px */
   --radius-tag: var(--radius-full);        /* Tags/chips: pill */
-  --radius-menu: var(--radius-md);         /* Dropdown menus: 8px */
+  --radius-menu: var(--radius-xl);         /* Dropdown menus: 12px */
   --radius-tooltip: var(--radius-sm);      /* Tooltips: 6px */
   --radius-avatar: var(--radius-full);     /* Avatars: circle */
 }

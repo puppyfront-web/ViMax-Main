@@ -1,151 +1,189 @@
 /* ═══════════════════════════════════════════════════════════════════
    ViMax Unified Design Tokens — Colors
-
-   Blend: Linear (surface-ladder, lavender) × RunwayML (cinematic dark)
-          × Cursor (AI pastels, warm light)
+   Theme: Tech-Vibrant AI Video Studio
+   Deep cosmic dark surfaces + electric violet accent, hyper-cyan
+   secondary and sunset-coral highlights (Stitch design system).
+   Node-type categorical colors are harmonized (same saturation/lightness
+   band) and used only for small-area semantic coding: icon chips, edges,
+   zone headers, minimap. Status colors are independent of type colors.
    ═══════════════════════════════════════════════════════════════════ */
 
-/* ═══ DARK THEME (default — Linear base + RunwayML canvas) ═══ */
+/* ═══ DARK THEME (default — Cosmic Studio) ═══ */
 
 :root {
-  /* ── Canvas & Surfaces (Linear surface-ladder) ── */
-  --color-canvas: #010102;               /* Deepest — Linear signature */
-  --color-surface-1: #0f1011;            /* Cards on canvas */
-  --color-surface-2: #141516;            /* Elevated cards, hover */
-  --color-surface-3: #18191a;            /* Dropdowns, sub-nav */
-  --color-surface-4: #191a1b;            /* Highest lifted surface */
+  /* ── Canvas & Surfaces (cosmic blue-violet ladder) ── */
+  --color-canvas: #0f131d;               /* App background */
+  --color-surface-1: #171b26;            /* Cards, panels */
+  --color-surface-2: #1c1f2a;            /* Elevated, hover */
+  --color-surface-3: #262a35;            /* Dropdowns, menus */
+  --color-surface-4: #313540;            /* Highest lift */
 
-  /* RunwayML canvas (for the workspace area) */
-  --color-canvas-cinema: #000000;        /* Pure black — content-first */
+  /* Pure black workspace for cinematic content focus */
+  --color-canvas-cinema: #000000;
 
-  /* ── Hairlines (Linear border system) ── */
-  --color-hairline: #23252a;             /* Card borders, dividers */
-  --color-hairline-strong: #34343a;      /* Stronger borders, focus */
-  --color-hairline-tertiary: #3e3e44;    /* Tertiary nested borders */
+  /* ── Hairlines ── */
+  --color-hairline: #262b38;             /* Default borders */
+  --color-hairline-strong: #353b4b;      /* Hovered / active borders */
+  --color-hairline-tertiary: #4a5064;    /* Focus rings, nested borders */
 
-  /* ── Ink / Text (Linear text stack) ── */
-  --color-ink: #f7f8f8;                  /* Primary text — light gray */
-  --color-ink-muted: #d0d6e0;            /* Secondary — slightly dimmed */
-  --color-ink-subtle: #8a8f98;           /* Tertiary — metadata */
-  --color-ink-tertiary: #62666d;         /* Quaternary — disabled, footnotes */
-  --color-ink-inverse: #000000;          /* Text on light surfaces */
+  /* ── Ink / Text ── */
+  --color-ink: #dfe2f1;                  /* Primary text */
+  --color-ink-muted: #cbc3d7;            /* Secondary text */
+  --color-ink-subtle: #958ea0;           /* Tertiary text */
+  --color-ink-tertiary: #6d687f;         /* Disabled / quaternary */
+  --color-ink-inverse: #170736;          /* Text on violet surfaces */
 
-  /* ── Brand Accent (Linear lavender-blue) ── */
-  --color-accent: #5e6ad2;               /* Primary accent — used scarcely */
-  --color-accent-hover: #828fff;         /* Hover state */
-  --color-accent-focus: #5e69d1;         /* Focus ring tint */
-  --color-accent-subtle: rgba(94,106,210,0.08);
-  --color-accent-muted: rgba(94,106,210,0.15);
-  --color-accent-emphasis: rgba(94,106,210,0.25);
-  --color-accent-on: #ffffff;
+  /* ── Brand Accent (Electric Violet — CTAs, selection, focus) ── */
+  --color-accent: #a078ff;
+  --color-accent-hover: #b493ff;
+  --color-accent-focus: #a078ff;
+  --color-accent-subtle: rgba(160, 120, 255, 0.06);
+  --color-accent-muted: rgba(160, 120, 255, 0.14);
+  --color-accent-emphasis: rgba(160, 120, 255, 0.24);
+  --color-accent-on: #170736;            /* Deep violet ink on violet */
 
-  /* ── AI Timeline Pastels (Cursor agent palette) ── */
-  --color-ai-thinking: #dfa88f;          /* Peach — AI thinking / reasoning */
-  --color-ai-reading: #9fbbe0;           /* Blue — reading context */
-  --color-ai-editing: #c0a8dd;           /* Lavender — editing/modifying */
-  --color-ai-generating: #9fc9a2;        /* Mint — generating content */
-  --color-ai-done: #c08532;              /* Gold — task complete */
-  --color-ai-error: #cf2d56;             /* Red — error state */
+  /* ── Secondary Accent (Hyper Cyan — processing, telemetry) ── */
+  --color-secondary: #4cd7f6;
+  --color-secondary-hover: #71e1ff;
+  --color-secondary-subtle: rgba(76, 215, 246, 0.06);
+  --color-secondary-muted: rgba(76, 215, 246, 0.12);
+  --color-secondary-emphasis: rgba(76, 215, 246, 0.2);
+  --color-secondary-on: #003640;
 
-  /* Pastel pill tokens for node statuses */
-  --color-node-idle: #8a8f98;
-  --color-node-queued: #dfa88f;
-  --color-node-running: #9fbbe0;
-  --color-node-done: #9fc9a2;
-  --color-node-error: #cf2d56;
-  --color-node-dirty: #c08532;
+  /* ── Tertiary Accent (Sunset Coral — kinetic highlights) ── */
+  --color-tertiary: #ffb690;
+  --color-tertiary-container: rgba(236, 106, 6, 0.15);
+
+  /* ── AI Timeline Status Palette ── */
+  --color-ai-thinking: #6ea3f0;          /* Blue — reasoning */
+  --color-ai-reading: #a078ff;           /* Violet — reading context */
+  --color-ai-editing: #c47f92;           /* Rose — modifying */
+  --color-ai-generating: #35c6e8;        /* Cyan — generating */
+  --color-ai-done: #ffb690;              /* Coral — complete */
+  --color-ai-error: #e5484d;             /* Red — error */
+
+  /* Node status tokens (independent of type colors) */
+  --color-node-idle: #6e7280;
+  --color-node-queued: #8b8fa0;
+  --color-node-running: #35c6e8;
+  --color-node-done: #58ab84;
+  --color-node-error: #e5484d;
+  --color-node-dirty: #ec6a06;
 
   /* ── Semantic ── */
-  --color-success: #27a644;
-  --color-success-subtle: rgba(39,166,68,0.12);
-  --color-warning: #d97706;
-  --color-warning-subtle: rgba(217,119,6,0.12);
-  --color-danger: #cf2d56;
-  --color-danger-subtle: rgba(207,45,86,0.12);
-  --color-info: #5e6ad2;
-  --color-info-subtle: rgba(94,106,210,0.10);
+  --color-success: #58ab84;
+  --color-success-subtle: rgba(88, 171, 132, 0.08);
+  --color-warning: #ec6a06;
+  --color-warning-subtle: rgba(236, 106, 6, 0.08);
+  --color-danger: #ff7a76;
+  --color-danger-subtle: rgba(255, 122, 118, 0.08);
+  --color-info: #4cd7f6;
+  --color-info-subtle: rgba(76, 215, 246, 0.08);
 
-  /* ── Canvas Node Type Colors (RunwayML-style content coding) ── */
-  --color-node-script: #f59e0b;
-  --color-node-character: #ec4899;
-  --color-node-storyboard: #06b6d4;
-  --color-node-shot: #3b82f6;
-  --color-node-image: #8b5cf6;
-  --color-node-video: #22c55e;
-  --color-node-concat: #f97316;
+  /* ── Canvas Node Type Colors (harmonized categorical ramp) ── */
+  --color-node-script: #b98e57;          /* Script: bronze */
+  --color-node-character: #c47f92;       /* Character: rose */
+  --color-node-storyboard: #58a8b5;      /* Storyboard: teal */
+  --color-node-shot: #5f8fd0;            /* Shot: azure */
+  --color-node-image: #9182cc;           /* Image: violet */
+  --color-node-video: #58ab84;           /* Video: green */
+  --color-node-concat: #7d95ad;          /* Concat: steel slate */
+  --color-node-audio: #a3a86b;           /* Audio: olive */
 
-  /* ── Gradients (subtle, Linear-style — no decorative gradients) ── */
-  --gradient-brand: linear-gradient(135deg, #5e6ad2 0%, #828fff 100%);
-  --gradient-brand-subtle: linear-gradient(135deg, rgba(94,106,210,0.08) 0%, rgba(130,143,255,0.08) 100%);
+  /* ── Gradients (violet → cyan, energetic) ── */
+  --gradient-brand: linear-gradient(135deg, #a078ff 0%, #35c6e8 100%);
+  --gradient-brand-subtle: linear-gradient(135deg, rgba(160, 120, 255, 0.06) 0%, rgba(53, 198, 232, 0.06) 100%);
 }
 
-/* ═══ LIGHT THEME (Cursor warm cream base) ═══ */
+/* ═══ LIGHT THEME (Studio Daylight) ═══ */
 
 [data-theme="light"] {
-  /* ── Canvas & Surfaces (Cursor cream system) ── */
-  --color-canvas: #f7f7f4;               /* Warm cream — Cursor signature */
-  --color-surface-1: #ffffff;            /* Pure white cards */
-  --color-surface-2: #fafaf7;            /* Slightly lifted */
-  --color-surface-3: #f0f0ec;            /* Dropdowns, sub-nav */
-  --color-surface-4: #e8e8e2;            /* Highest lift */
+  /* ── Canvas & Surfaces ── */
+  --color-canvas: #f2f2f9;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #edeff7;
+  --color-surface-3: #e2e5f0;
+  --color-surface-4: #d4d8e5;
 
-  --color-canvas-cinema: #f5f5f0;        /* Warm off-white for workspace */
+  --color-canvas-cinema: #ffffff;
 
-  /* ── Hairlines (Cursor hairline system) ── */
-  --color-hairline: #e6e5e0;
-  --color-hairline-strong: #cfcdc4;
-  --color-hairline-tertiary: #efeee8;
+  /* ── Hairlines ── */
+  --color-hairline: #e3e5ef;
+  --color-hairline-strong: #c6cade;
+  --color-hairline-tertiary: #a6abc4;
 
-  /* ── Ink / Text (Cursor warm ink) ── */
-  --color-ink: #26251e;                  /* Warm near-black */
-  --color-ink-muted: #5a5852;            /* Body text */
-  --color-ink-subtle: #807d72;           /* Secondary */
-  --color-ink-tertiary: #a09c92;         /* Disabled */
+  /* ── Ink / Text ── */
+  --color-ink: #191c2b;
+  --color-ink-muted: #4b5069;
+  --color-ink-subtle: #7d8299;
+  --color-ink-tertiary: #a7abbe;
   --color-ink-inverse: #ffffff;
 
-  /* ── Brand Accent (Cursor Orange for CTAs) ── */
-  --color-accent: #f54e00;               /* Cursor Orange — CTAs only */
-  --color-accent-hover: #d04200;         /* Press state */
-  --color-accent-focus: rgba(245,78,0,0.3);
-  --color-accent-subtle: rgba(245,78,0,0.06);
-  --color-accent-muted: rgba(245,78,0,0.12);
-  --color-accent-emphasis: rgba(245,78,0,0.18);
+  /* ── Brand Accent (deep violet, light ink on top) ── */
+  --color-accent: #6d3bd7;
+  --color-accent-hover: #5b2cc6;
+  --color-accent-focus: #6d3bd7;
+  --color-accent-subtle: rgba(109, 59, 215, 0.06);
+  --color-accent-muted: rgba(109, 59, 215, 0.12);
+  --color-accent-emphasis: rgba(109, 59, 215, 0.2);
   --color-accent-on: #ffffff;
 
-  /* ── AI Timeline Pastels (same palette, slightly muted for light bg) ── */
-  --color-ai-thinking: #d49572;
-  --color-ai-reading: #8ba8d2;
-  --color-ai-editing: #b095d2;
-  --color-ai-generating: #8ab892;
-  --color-ai-done: #b07528;
-  --color-ai-error: #c42848;
+  /* ── Secondary Accent ── */
+  --color-secondary: #0e7f9e;
+  --color-secondary-hover: #0a6a85;
+  --color-secondary-subtle: rgba(14, 127, 158, 0.06);
+  --color-secondary-muted: rgba(14, 127, 158, 0.12);
+  --color-secondary-emphasis: rgba(14, 127, 158, 0.2);
+  --color-secondary-on: #ffffff;
 
-  --color-node-idle: #a09c92;
-  --color-node-queued: #d49572;
-  --color-node-running: #8ba8d2;
-  --color-node-done: #8ab892;
-  --color-node-error: #c42848;
-  --color-node-dirty: #b07528;
+  /* ── Tertiary Accent (Sunset Coral) ── */
+  --color-tertiary: #c05a10;
+  --color-tertiary-container: rgba(192, 90, 16, 0.12);
+
+  /* ── AI Timeline Status Palette ── */
+  --color-ai-thinking: #3a6fb5;
+  --color-ai-reading: #6d3bd7;
+  --color-ai-editing: #b04a5e;
+  --color-ai-generating: #0e90b0;
+  --color-ai-done: #c05a10;
+  --color-ai-error: #d93a3f;
+
+  --color-node-idle: #82828c;
+  --color-node-queued: #6e6e78;
+  --color-node-running: #0e90b0;
+  --color-node-done: #2e8f68;
+  --color-node-error: #d93a3f;
+  --color-node-dirty: #b37417;
 
   /* ── Semantic ── */
-  --color-success: #1f8a65;
-  --color-success-subtle: rgba(31,138,101,0.08);
-  --color-warning: #b45309;
-  --color-warning-subtle: rgba(180,83,9,0.08);
-  --color-danger: #c42848;
-  --color-danger-subtle: rgba(196,40,72,0.08);
-  --color-info: #5e6ad2;
-  --color-info-subtle: rgba(94,106,210,0.08);
+  --color-success: #2e8f68;
+  --color-success-subtle: rgba(46, 143, 104, 0.08);
+  --color-warning: #b37417;
+  --color-warning-subtle: rgba(179, 116, 23, 0.08);
+  --color-danger: #d93a3f;
+  --color-danger-subtle: rgba(217, 58, 63, 0.08);
+  --color-info: #0e7f9e;
+  --color-info-subtle: rgba(14, 127, 158, 0.08);
+
+  /* ── Canvas Node Type Colors (darkened ramp for white surfaces) ── */
+  --color-node-script: #8f6b34;
+  --color-node-character: #a85b70;
+  --color-node-storyboard: #2e7f8c;
+  --color-node-shot: #3a6ea8;
+  --color-node-image: #6f5fb0;
+  --color-node-video: #2e8f68;
+  --color-node-concat: #56738c;
+  --color-node-audio: #6f744a;
 }
 
 /* ═══ Backward-compatible aliases ═══ */
 
 :root {
   --color-bg: var(--color-canvas);
-  --color-bg-base: #000000;
+  --color-bg-base: #0a0e18;
   --color-bg-raised: var(--color-surface-1);
   --color-bg-overlay: var(--color-surface-2);
-  --color-bg-inset: #000000;
+  --color-bg-inset: #0a0e18;
 
   --color-surface: var(--color-surface-1);
   --color-surface-hover: var(--color-surface-2);
@@ -157,7 +195,7 @@
   --color-border-hover: var(--color-hairline-strong);
   --color-border-strong: var(--color-hairline-tertiary);
   --color-border-subtle: var(--color-hairline);
-  --color-border-accent: rgba(94,106,210,0.25);
+  --color-border-accent: rgba(160, 120, 255, 0.35);
 
   --color-text-primary: var(--color-ink);
   --color-text: var(--color-ink);
@@ -168,31 +206,30 @@
   --color-text-quaternary: var(--color-ink-tertiary);
   --color-text-inverse: var(--color-ink-inverse);
 
-  --color-accent-hover: var(--color-accent-hover);
   --color-accent-active: var(--color-accent-focus);
-  --color-accent-glow: rgba(94,106,210,0.25);
+  --color-accent-glow: rgba(160, 120, 255, 0.24);
 
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.45);
-  --shadow-accent-sm: 0 0 12px rgba(94,106,210,0.15);
-  --shadow-accent-md: 0 0 24px rgba(94,106,210,0.2);
-  --shadow-card-hover: 0 4px 16px rgba(0,0,0,0.25), 0 0 0 1px rgba(94,106,210,0.08);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.55);
+  --shadow-accent-sm: 0 0 0 1px rgba(160, 120, 255, 0.2);
+  --shadow-accent-md: 0 0 0 1px rgba(160, 120, 255, 0.3);
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--color-hairline-strong);
 
-  --gradient-brand: linear-gradient(135deg, #5e6ad2 0%, #828fff 100%);
-  --gradient-brand-subtle: linear-gradient(135deg, rgba(94,106,210,0.08) 0%, rgba(130,143,255,0.08) 100%);
-  --gradient-hero: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(94,106,210,0.10) 0%, transparent 100%);
+  --gradient-brand: linear-gradient(135deg, #a078ff 0%, #35c6e8 100%);
+  --gradient-brand-subtle: linear-gradient(135deg, rgba(160, 120, 255, 0.05) 0%, rgba(53, 198, 232, 0.05) 100%);
+  --gradient-hero: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(160, 120, 255, 0.09) 0%, transparent 100%);
   --gradient-accent: var(--gradient-brand);
   --gradient-accent-subtle: var(--gradient-brand-subtle);
-  --gradient-card-accent: linear-gradient(180deg, rgba(94,106,210,0.04) 0%, transparent 100%);
+  --gradient-card-accent: linear-gradient(180deg, rgba(160, 120, 255, 0.04) 0%, transparent 100%);
 }
 
 [data-theme="light"] {
   --color-bg: var(--color-canvas);
-  --color-bg-base: #f2f2ee;
+  --color-bg-base: #e8eaf3;
   --color-bg-raised: var(--color-surface-1);
   --color-bg-overlay: var(--color-surface-2);
-  --color-bg-inset: #f0f0ea;
+  --color-bg-inset: #e2e5f0;
 
   --color-surface: var(--color-surface-1);
   --color-surface-hover: var(--color-surface-2);
@@ -204,7 +241,7 @@
   --color-border-hover: var(--color-hairline-strong);
   --color-border-strong: var(--color-hairline-tertiary);
   --color-border-subtle: var(--color-hairline);
-  --color-border-accent: rgba(245,78,0,0.2);
+  --color-border-accent: rgba(109, 59, 215, 0.3);
 
   --color-text-primary: var(--color-ink);
   --color-text: var(--color-ink);
@@ -215,20 +252,19 @@
   --color-text-quaternary: var(--color-ink-tertiary);
   --color-text-inverse: var(--color-ink-inverse);
 
-  --color-accent-hover: var(--color-accent-hover);
   --color-accent-active: var(--color-accent-focus);
-  --color-accent-glow: rgba(245,78,0,0.2);
+  --color-accent-glow: rgba(109, 59, 215, 0.2);
 
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
-  --shadow-lg: 0 8px 28px rgba(0,0,0,0.08);
-  --shadow-accent-sm: 0 0 12px rgba(94,106,210,0.1);
-  --shadow-accent-md: 0 0 20px rgba(94,106,210,0.15);
-  --shadow-card-hover: 0 4px 16px rgba(0,0,0,0.06), 0 0 0 1px rgba(94,106,210,0.08);
+  --shadow-sm: 0 1px 2px rgba(20, 18, 40, 0.06);
+  --shadow-md: 0 4px 12px rgba(20, 18, 40, 0.08);
+  --shadow-lg: 0 8px 28px rgba(20, 18, 40, 0.1);
+  --shadow-accent-sm: 0 0 0 1px rgba(109, 59, 215, 0.15);
+  --shadow-accent-md: 0 0 0 1px rgba(109, 59, 215, 0.25);
+  --shadow-card-hover: 0 4px 16px rgba(20, 18, 40, 0.08), 0 0 0 1px var(--color-hairline-strong);
 
-  --gradient-brand: linear-gradient(135deg, #5e6ad2 0%, #828fff 100%);
-  --gradient-hero: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(94,106,210,0.06) 0%, transparent 100%);
+  --gradient-brand: linear-gradient(135deg, #6d3bd7 0%, #0e7f9e 100%);
+  --gradient-hero: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(109, 59, 215, 0.07) 0%, transparent 100%);
   --gradient-accent: var(--gradient-brand);
   --gradient-accent-subtle: var(--gradient-brand-subtle);
-  --gradient-card-accent: linear-gradient(180deg, rgba(94,106,210,0.03) 0%, transparent 100%);
+  --gradient-card-accent: linear-gradient(180deg, rgba(109, 59, 215, 0.03) 0%, transparent 100%);
 }

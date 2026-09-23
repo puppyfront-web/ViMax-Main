@@ -2,6 +2,9 @@
 /* Layered CSS architecture: tokens → base → components → overrides */
 
 @import "tailwindcss";
+/* Workspace UI package resolves through node_modules (pnpm symlink), which
+   Tailwind v4 auto content detection skips — scan its sources explicitly. */
+@source "../../../../packages/ui/src";
 
 /* ── Design Tokens ────────────────────────────────────────────── */
 @import "../styles/tokens/colors.css";
@@ -59,7 +62,7 @@
 
   /* ── Glass panel ── */
   .glass {
-    background: rgba(17, 17, 21, 0.8);
+    background: rgba(15, 19, 29, 0.8);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border: 1px solid var(--color-border);
@@ -104,24 +107,23 @@
 
 @keyframes nodePulse {
   0%, 100% {
-    box-shadow: 0 0 8px var(--glow-color, #f5b84766),
-                0 0 20px var(--glow-color, #f5b84722);
+    box-shadow: 0 0 0 1px var(--glow-color, rgba(95, 159, 216, 0.45)),
+                0 0 14px rgba(95, 159, 216, 0.12);
   }
   50% {
-    box-shadow: 0 0 16px var(--glow-color, #f5b84799),
-                0 0 32px var(--glow-color, #f5b84744);
+    box-shadow: 0 0 0 1px var(--glow-color, rgba(95, 159, 216, 0.7)),
+                0 0 22px rgba(95, 159, 216, 0.2);
   }
 }
 
 @keyframes nodeDirtyPulse {
-  0%, 100% {
-    border-color: var(--color-danger);
-    box-shadow: 0 0 6px var(--color-danger-subtle);
-  }
-  50% {
-    border-color: #f9706688;
-    box-shadow: 0 0 12px #f9706666;
-  }
+  0%, 100% { border-color: var(--color-node-dirty); }
+  50% { border-color: rgba(217, 142, 63, 0.45); }
+}
+
+@keyframes beamSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
 @keyframes blink {
@@ -166,6 +168,7 @@
 }
 
 .animate-in { animation: fadeIn 0.3s ease-out; }
+.animate-blink { animation: blink 1s infinite; }
 .animate-slide-up { animation: slideUp 0.3s ease-out; }
 .animate-slide-down { animation: slideDown 0.3s ease-out; }
 .animate-slide-in-right { animation: slideInRight 0.3s ease-out; }
@@ -211,21 +214,15 @@
   cursor: grabbing !important;
 }
 
-/* Edge connections (thick, dark) */
-.react-flow__edge-path {
-  stroke-width: 3 !important;
-  stroke: #444 !important;
-  transition: stroke 0.2s;
-}
-
+/* Edge connections — color/width/flow are derived per edge from node
+ * relations (edge-relations.ts sets them inline); CSS only adds emphasis
+ * on hover/selection so it never clobbers the relation colors. */
 .react-flow__edge:hover .react-flow__edge-path {
   stroke-width: 4 !important;
-  stroke: var(--color-accent) !important;
 }
 
 .react-flow__edge.selected .react-flow__edge-path {
   stroke-width: 4 !important;
-  stroke: var(--color-accent) !important;
 }
 
 /* Connection handles */
@@ -234,14 +231,17 @@
 }
 
 .react-flow__handle:hover {
-  transform: scale(1.4);
-  background-color: var(--color-accent) !important;
+  transform: scale(1.35);
+}
+
+.react-flow__handle-connecting {
+  animation: nodePulse 1.2s ease-in-out infinite;
 }
 
 /* Selection box */
 .react-flow__selection {
-  background-color: rgba(99, 102, 241, 0.08) !important;
-  border: 1px solid rgba(99, 102, 241, 0.3) !important;
+  background-color: rgba(232, 165, 75, 0.06) !important;
+  border: 1px solid rgba(232, 165, 75, 0.35) !important;
 }
 
 /* Space+drag panning cursor */
@@ -373,4 +373,46 @@
 @media (max-width: 767px) {
   .responsive-heading { font-size: 24px; }
   .responsive-text { font-size: 13px; }
+}
+
+/* Canvas edge flow — dash cycle is 14px (7 dash + 7 gap), so the offset
+   loop of -14 makes the movement seamless. Duration is set inline per
+   edge (see edge-relations.ts): slow for idle links, fast while running. */
+@keyframes vimax-edge-flow {
+  to { stroke-dashoffset: -14; }
+}
+
+/* ── Cinematic backdrop（首页 hero 光影）──
+   仅 transform 位移动画；被下方全局 reduce 开关接管。 */
+@keyframes fxBeamDrift {
+  from { translate: -2.5% -6px; }
+  to { translate: 2.5% 10px; }
+}
+@keyframes fxAuroraDrift {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(-60px, 36px) scale(1.12); }
+}
+
+/* ── Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── React Flow theme hooks (colors that must follow the theme) ── */
+.react-flow__background pattern circle {
+  fill: var(--color-hairline-strong);
+}
+
+.react-flow__minimap-mask {
+  fill: rgba(12, 12, 14, 0.55);
+}
+
+[data-theme="light"] .react-flow__minimap-mask {
+  fill: rgba(245, 245, 246, 0.65);
 }

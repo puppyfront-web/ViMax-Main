@@ -1,6 +1,6 @@
 "use client";
 
-import { Tabs, Button, Input, Select, Switch, useToast, PageContainer } from "@vimax/ui";
+import { Tabs, Button, Input, Select, Switch, useToast, PageContainer, PageHeader } from "@vimax/ui";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { User, Key, Settings2, CreditCard, Cpu } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -12,6 +12,7 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
   const t = useTranslations("settings");
+  const tModels = useTranslations("settings.models");
   const [tab, setTab] = useState("profile");
 
   // Navigate to billing page when billing tab is selected
@@ -35,7 +36,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: "profile", label: t("profile"), icon: <User className="size-3.5" /> },
     { id: "api-keys", label: t("apiKeys"), icon: <Key className="size-3.5" /> },
-    { id: "models", label: "模型管理", icon: <Cpu className="size-3.5" /> },
+    { id: "models", label: tModels("title"), icon: <Cpu className="size-3.5" /> },
     { id: "preferences", label: t("preferences"), icon: <Settings2 className="size-3.5" /> },
     { id: "billing", label: t("billing"), icon: <CreditCard className="size-3.5" /> },
   ];
@@ -108,7 +109,7 @@ export default function SettingsPage() {
           {/* ── Models Tab ── */}
           {tab === "models" && (
             <div className="py-8 text-center text-sm text-[var(--color-text-muted)]">
-              正在跳转到模型管理…
+              {t("redirectingModels")}
             </div>
           )}
 

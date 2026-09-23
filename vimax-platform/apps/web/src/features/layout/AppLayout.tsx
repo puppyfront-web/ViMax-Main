@@ -3,16 +3,20 @@
 import { type ReactNode, useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { AppShell, TopNav, ErrorBoundary, cn } from "@vimax/ui";
+import { AppShell, TopNav, BottomTabBar, ErrorBoundary } from "@vimax/ui";
 import { useAuth } from "@/features/auth/AuthProvider";
 import { useTheme } from "@/features/theme/ThemeProvider";
 import { useLocaleSwitch } from "@/i18n/locale";
 import { useTranslations } from "next-intl";
-import { LogIn, UserPlus, User, Sun, Moon, Globe } from "lucide-react";
+import { User, Sun, Moon, Globe, Home, Compass, FolderOpen, Image as ImageIcon, Clapperboard, Settings } from "lucide-react";
+import { AuthDialog } from "@/features/auth/AuthCard";
 import { CmdKSearch } from "@/features/search/CmdKSearch";
 import { KeyboardShortcuts } from "@/features/shortcuts/KeyboardShortcuts";
+import { shouldSkipAppShell } from "@/features/canvas/utils/canvas-navigation";
+import { StudioSidebar } from "@/features/layout/StudioSidebar";
 
 export function AppLayout({ children }: { children: ReactNode }) {
+  const [authOpen, setAuthOpen] = useState(false);
   const pathname = usePathname();
   const { user, isLoading, logout } = useAuth();
   const { resolved, setTheme } = useTheme();
@@ -24,9 +28,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // Skip AppShell for login/signup pages
   const isAuthPage = pathname === "/login" || pathname === "/signup";
-  if (isAuthPage) {
+  const isFullscreenPage = shouldSkipAppShell(pathname);
+
+  if (isAuthPage || isFullscreenPage) {
     return <ErrorBoundary>{children}</ErrorBoundary>;
   }
 
@@ -34,8 +39,18 @@ export function AppLayout({ children }: { children: ReactNode }) {
     { label: t("home"), href: "/", active: pathname === "/" },
     { label: t("explore"), href: "/explore", active: pathname === "/explore" },
     { label: tc("assets"), href: "/assets", active: pathname === "/assets" },
+    { label: t("studioVideo"), href: "/studio/video", active: pathname === "/studio/video" },
     { label: t("studio"), href: "/studio/image", active: pathname === "/studio/image" },
-    { label: t("models"), href: "/settings/models", active: pathname === "/settings/models" },
+  ];
+
+  // Mobile bottom tabs (<md)：桌面分组侧栏的移动端等价物
+  const mobileTabs = [
+    { label: t("home"), href: "/", icon: Home, active: pathname === "/" },
+    { label: t("studioVideo"), href: "/studio/video", icon: Clapperboard, active: pathname === "/studio/video" },
+    { label: t("studio"), href: "/studio/image", icon: ImageIcon, active: pathname === "/studio/image" },
+    { label: tc("assets"), href: "/assets", icon: FolderOpen, active: pathname === "/assets" },
+    { label: t("explore"), href: "/explore", icon: Compass, active: pathname === "/explore" },
+    { label: tc("settings"), href: "/settings", icon: Settings, active: pathname === "/settings" },
   ];
 
   return (
@@ -90,32 +105,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-1">
-                  <Link
-                    href="/login"
-                    className={cn(
-                      "flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors no-underline",
-                      pathname === "/login"
-                        ? "bg-[var(--color-accent-subtle)] text-[var(--color-accent)]"
-                        : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]",
-                    )}
+                <>
+                  <button
+                    onClick={() => setAuthOpen(true)}
+                    className="flex items-center gap-1 rounded-md bg-[var(--color-accent)] px-2.5 py-1 text-xs font-medium text-[var(--color-accent-on)] transition-colors hover:bg-[var(--color-accent-hover)]"
                   >
-                    <LogIn className="size-3" />
-                    {tc("login")}
-                  </Link>
-                  <Link
-                    href="/signup"
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors no-underline"
-                  >
-                    <UserPlus className="size-3" />
-                    {tc("signup")}
-                  </Link>
-                </div>
+                    {tc("login")} / {tc("signup")}
+                  </button>
+                  <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
+                </>
               )}
             </>
           ),
         }}
-        sidebar={null}
+        sidebar={<StudioSidebar />}
+        sidebarClassName="hidden lg:flex"
+        bottomNav={<BottomTabBar items={mobileTabs} />}
       >
         {children}
       </AppShell>

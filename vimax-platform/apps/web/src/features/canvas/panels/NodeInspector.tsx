@@ -8,8 +8,6 @@ import {
   KEY_LIGHT_POSITIONS,
   RIM_LIGHT_PRESETS,
   AMBIENT_LIGHT_OPTIONS,
-  VIDEO_MODELS,
-  IMAGE_MODELS,
 } from "@vimax/contracts";
 
 const RUNNABLE_TYPES = new Set(["image", "character", "shot", "video"]);
@@ -449,65 +447,11 @@ function EditableField({
   }
 
   if (fieldKey === "modelId" && nodeType === "image") {
-    return (
-      <div>
-        <span style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginBottom: 2 }}>
-          {FIELD_LABELS[fieldKey] ?? fieldKey}
-        </span>
-        <select
-          value={strValue}
-          onChange={(e) => {
-            if (onUpdate) onUpdate(nodeId, fieldKey, e.target.value);
-          }}
-          style={{
-            width: "100%",
-            fontSize: 11,
-            color: "var(--color-text)",
-            backgroundColor: "var(--color-bg)",
-            borderRadius: 6,
-            border: "1px solid var(--color-border)",
-            padding: "4px 8px",
-            outline: "none",
-            fontFamily: "inherit",
-          }}
-        >
-          {IMAGE_MODELS.map((m) => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </select>
-      </div>
-    );
+    return <ModelFieldSelect nodeId={nodeId} fieldKey={fieldKey} value={strValue} type="image" onUpdate={onUpdate} />;
   }
 
   if (fieldKey === "modelId" && nodeType === "video") {
-    return (
-      <div>
-        <span style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginBottom: 2 }}>
-          {FIELD_LABELS[fieldKey] ?? fieldKey}
-        </span>
-        <select
-          value={strValue}
-          onChange={(e) => {
-            if (onUpdate) onUpdate(nodeId, fieldKey, e.target.value);
-          }}
-          style={{
-            width: "100%",
-            fontSize: 11,
-            color: "var(--color-text)",
-            backgroundColor: "var(--color-bg)",
-            borderRadius: 6,
-            border: "1px solid var(--color-border)",
-            padding: "4px 8px",
-            outline: "none",
-            fontFamily: "inherit",
-          }}
-        >
-          {VIDEO_MODELS.map((m) => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </select>
-      </div>
-    );
+    return <ModelFieldSelect nodeId={nodeId} fieldKey={fieldKey} value={strValue} type="video" onUpdate={onUpdate} />;
   }
 
   const commit = () => {
@@ -1227,6 +1171,62 @@ function FocusPointPicker({
       <span style={{ position: "absolute", bottom: 4, right: 6, fontSize: 9, color: "var(--color-text-muted)" }}>
         ({Math.round(value.x * 100)}%, {Math.round(value.y * 100)}%)
       </span>
+    </div>
+  );
+}
+
+// ── Model Field Select (dynamic DB-backed model list) ─────────────────
+
+function ModelFieldSelect({
+  nodeId,
+  fieldKey,
+  value,
+  type,
+  onUpdate,
+}: {
+  nodeId: string;
+  fieldKey: string;
+  value: string;
+  type: "image" | "video";
+  onUpdate?: (nodeId: string, key: string, value: unknown) => void;
+}) {
+  const { data } = trpc.modelConfig.list.useQuery(
+    { type },
+    { staleTime: 60_000 },
+  );
+  const models = data?.items ?? [];
+
+  return (
+    <div>
+      <span style={{ fontSize: 10, color: "var(--color-text-muted)", display: "block", marginBottom: 2 }}>
+        {FIELD_LABELS[fieldKey] ?? fieldKey}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => {
+          if (onUpdate) onUpdate(nodeId, fieldKey, e.target.value);
+        }}
+        style={{
+          width: "100%",
+          fontSize: 11,
+          color: "var(--color-text)",
+          backgroundColor: "var(--color-bg)",
+          borderRadius: 6,
+          border: "1px solid var(--color-border)",
+          padding: "4px 8px",
+          outline: "none",
+          fontFamily: "inherit",
+        }}
+      >
+        {models.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name} {m.isDefault ? "★" : ""}
+          </option>
+        ))}
+        {models.length === 0 && (
+          <option value="">无可用模型</option>
+        )}
+      </select>
     </div>
   );
 }

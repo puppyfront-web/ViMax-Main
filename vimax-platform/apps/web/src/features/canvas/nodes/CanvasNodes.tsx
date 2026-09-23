@@ -1,10 +1,10 @@
 "use client";
 
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react";
 import type { CanvasNodeType } from "@vimax/contracts";
-import { VIDEO_MOTION_PRESETS } from "@vimax/contracts";
+import { ModelSelect } from "@/features/models/ModelSelect";
 
-// ── Shared Node Shell ──────────────────────────────────────────────
+// ── Toonflow-style constants ────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, string> = {
   idle: "#555",
@@ -44,6 +44,14 @@ const TYPE_COLORS: Record<CanvasNodeType, string> = {
   concat: "#a855f7",
 };
 
+// ── Toonflow-style Canvas Node Shell ────────────────────────────────
+// Replicates Toonflow's node design:
+// - Black title badge (5px 10px padding, border-radius 8px 0, 16px font)
+// - .dragHandle on title bar (cursor: grab)
+// - Side handles (Left=source, Right=target) with offset
+// - Status indicators (4 states: idle/running/done/dirty/failed)
+// - Connection handles on left/right (matching Toonflow's LR flow)
+
 export interface CanvasNodeShellProps {
   type: CanvasNodeType;
   status?: string;
@@ -62,6 +70,7 @@ export function CanvasNodeShell({
   const isRunning = status === "running";
   const isDirty = status === "dirty";
   const isFailed = status === "failed";
+  const isDone = status === "done";
 
   const borderColor = isDirty || isFailed
     ? "#ef4444"
@@ -73,65 +82,86 @@ export function CanvasNodeShell({
     ? `0 0 16px ${color}33`
     : isRunning
       ? `0 0 12px ${color}66, 0 0 24px ${color}22`
-      : isDirty
-        ? "0 0 8px #ef444444, 0 0 16px #ef444422"
-        : isFailed
-          ? "0 0 8px #ef444444"
-          : "0 2px 8px rgba(0,0,0,0.3)";
+    : isDirty
+      ? "0 0 8px #ef444444, 0 0 16px #ef444422"
+    : isFailed
+      ? "0 0 8px #ef444444"
+    : "0 2px 8px rgba(0,0,0,0.3)";
 
   const anim = isRunning
     ? "nodePulse 1.5s ease-in-out infinite"
     : isDirty
       ? "nodeDirtyPulse 2s ease-in-out infinite"
-      : undefined;
+    : undefined;
+
+  // Status badge text (Toonflow-style: "生成中"/"已完成"/"生成失败")
+  const statusText: Record<string, string> = {
+    idle: "",
+    running: "⏳ 生成中",
+    done: "✅ 已完成",
+    dirty: "⚠️ 已过期",
+    failed: "❌ 失败",
+  };
 
   return (
     <div
       className="node-shell"
       style={{
         minWidth: 220,
-        maxWidth: 280,
+        maxWidth: 320,
         borderRadius: 10,
         border: `2px solid ${borderColor}`,
         backgroundColor: "var(--color-surface)",
         boxShadow: shadow,
         transition: "border-color 0.2s, box-shadow 0.2s",
         animation: anim,
+        position: "relative",
+        overflow: "visible",
       }}
     >
-      {/* Input handle */}
+      {/* Left target handle (Toonflow-style: offset for LR flow) */}
       <Handle
         type="target"
-        position={Position.Top}
+        position={Position.Left}
         style={{
           background: isDirty ? "#ef4444" : color,
-          border: `2px solid ${isDirty ? "#ef4444" : "var(--color-surface)"}`,
+          border: `2px solid var(--color-surface)`,
           width: 10,
           height: 10,
+          left: -5,
         }}
       />
 
-      {/* Header */}
+      {/* ── Title bar with drag handle (Toonflow pattern) ── */}
       <div
-        className="node-header"
+        className="dragHandle"
         style={{
+          cursor: "grab",
+          userSelect: "none",
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: "8px 12px",
-          borderBottom: `1px solid ${isDirty ? "#ef444433" : "var(--color-border)"}`,
+          padding: "8px 12px 6px",
         }}
       >
-        <span style={{ fontSize: 16 }}>{isDirty ? "⚠️" : TYPE_ICONS[type]}</span>
-        <span
+        {/* Toonflow-style title badge: black bg, white text */}
+        <div
           style={{
-            fontSize: 12,
+            backgroundColor: isDirty || isFailed ? "#ef4444" : "#000",
+            padding: "4px 10px",
+            color: "#fff",
+            borderRadius: "8px 0",
+            fontSize: 13,
             fontWeight: 600,
-            color: isDirty ? "#ef4444" : "var(--color-text)",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
           }}
         >
-          {isDirty ? `${TYPE_LABELS[type]} · 已过期` : TYPE_LABELS[type]}
-        </span>
+          <span style={{ fontSize: 14 }}>{TYPE_ICONS[type]}</span>
+          {TYPE_LABELS[type]}
+        </div>
+
         {/* Status dot */}
         <span
           style={{
@@ -142,26 +172,64 @@ export function CanvasNodeShell({
             marginLeft: "auto",
             flexShrink: 0,
           }}
-          title={status === "dirty" ? "上游已变更，需重新生成" : status}
+          title={status}
         />
       </div>
 
-      {/* Body */}
+      {/* Status bar (Toonflow-style: shows generation status) */}
+      {statusText[status] && (
+        <div
+          style={{
+            padding: "0 12px 4px",
+            fontSize: 10,
+            color: isRunning ? "#f59e0b" : isDone ? "#22c55e" : isFailed ? "#ef4444" : "#ef4444",
+          }}
+        >
+          {statusText[status]}
+        </div>
+      )}
+
+      {/* Divider line */}
+      <div
+        style={{
+          height: 1,
+          backgroundColor: isDirty ? "#ef444433" : "var(--color-border)",
+          margin: "0 12px",
+        }}
+      />
+
+      {/* Body content */}
       <div style={{ padding: "8px 12px", fontSize: 12, lineHeight: 1.5 }}>
         {children}
       </div>
 
-      {/* Output handle */}
+      {/* Right source handle (Toonflow-style: offset for LR flow) */}
       <Handle
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         style={{
           background: color,
           border: "2px solid var(--color-surface)",
           width: 10,
           height: 10,
+          right: -5,
         }}
       />
+
+      {/* Done indicator: subtle green top border glow */}
+      {isDone && (
+        <div
+          style={{
+            position: "absolute",
+            top: -2,
+            left: 10,
+            right: 10,
+            height: 2,
+            backgroundColor: "#22c55e",
+            borderRadius: 1,
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -172,118 +240,165 @@ export function ScriptNode({ data, selected }: NodeProps) {
   const content = (data.content as string) ?? "";
   return (
     <CanvasNodeShell type="script" status={data.status as string} selected={selected}>
-      <p style={{ color: "var(--color-text)", wordBreak: "break-word" }}>
-        {content.slice(0, 120)}
-        {content.length > 120 ? "…" : ""}
+      <p style={{ color: "var(--color-text)", wordBreak: "break-word", margin: 0 }}>
+        {content.slice(0, 150)}
+        {content.length > 150 ? "…" : ""}
       </p>
     </CanvasNodeShell>
   );
 }
 
-export function CharacterNode({ data, selected }: NodeProps) {
-  const name = (data.name as string) ?? "";
+export function CharacterNode({ id, data, selected }: NodeProps) {
+  const name = (data.name as string) ?? "新角色";
   const desc = (data.description as string) ?? "";
-  const frontAssetId = (data.frontAssetId as string) ?? "";
-  const sideAssetId = (data.sideAssetId as string) ?? "";
-  const backAssetId = (data.backAssetId as string) ?? "";
+  const modelId = (data.modelId as string) ?? "";
+  const { updateNodeData } = useReactFlow();
+
+  const handleModelChange = (newModelId: string) => {
+    updateNodeData(id, { ...data, modelId: newModelId });
+  };
+
   return (
     <CanvasNodeShell type="character" status={data.status as string} selected={selected}>
-      <p style={{ color: "var(--color-text)", fontWeight: 600 }}>{name || "未命名角色"}</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontSize: 20 }}>👤</span>
+        <span style={{ fontWeight: 600, color: "var(--color-text)" }}>{name}</span>
+      </div>
       {desc && (
-        <p style={{ color: "var(--color-text-muted)", fontSize: 11, marginTop: 2 }}>
-          {desc.slice(0, 80)}
-          {desc.length > 80 ? "…" : ""}
+        <p style={{ color: "var(--color-text-muted)", fontSize: 11, margin: "4px 0 0", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {desc}
         </p>
       )}
-      {(frontAssetId || sideAssetId || backAssetId) && (
-        <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-          <div style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${frontAssetId ? "#22c55e" : "var(--color-border)"}`, backgroundColor: frontAssetId ? "#22c55e22" : "var(--color-bg)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10 }} title="正视图">正</div>
-          <div style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${sideAssetId ? "#22c55e" : "var(--color-border)"}`, backgroundColor: sideAssetId ? "#22c55e22" : "var(--color-bg)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10 }} title="侧视图">侧</div>
-          <div style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${backAssetId ? "#22c55e" : "var(--color-border)"}`, backgroundColor: backAssetId ? "#22c55e22" : "var(--color-bg)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10 }} title="背视图">背</div>
-        </div>
-      )}
+      <div style={{ marginTop: 6, borderTop: "1px solid var(--color-border)", paddingTop: 6 }}>
+        <ModelSelect
+          type="image"
+          value={modelId}
+          onChange={handleModelChange}
+          compact
+          placeholder="图像模型"
+        />
+      </div>
     </CanvasNodeShell>
   );
 }
 
 export function StoryboardCellNode({ data, selected }: NodeProps) {
   const brief = (data.shotBrief as string) ?? "";
-  const camIdx = data.cameraIdx as number | undefined;
   return (
     <CanvasNodeShell type="storyboard_cell" status={data.status as string} selected={selected}>
-      <p style={{ color: "var(--color-text)", wordBreak: "break-word" }}>
-        {brief.slice(0, 100)}
-        {brief.length > 100 ? "…" : ""}
-      </p>
-      {camIdx != null && (
-        <span style={{ color: "var(--color-text-muted)", fontSize: 10 }}>
-          机位 #{camIdx}
-        </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: "#06b6d4" }}>机位 #{(data.cameraIdx as number) ?? 0}</span>
+      </div>
+      {brief && (
+        <p style={{ color: "var(--color-text-muted)", fontSize: 11, margin: 0, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {brief}
+        </p>
       )}
     </CanvasNodeShell>
   );
 }
 
-export function ShotNode({ data, selected }: NodeProps) {
+export function ShotNode({ id, data, selected }: NodeProps) {
   const ffDesc = (data.ffDesc as string) ?? "";
-  const motionDesc = (data.motionDesc as string) ?? "";
+  const motion = (data.motionDesc as string) ?? "";
+  const modelId = (data.modelId as string) ?? "";
+  const { updateNodeData } = useReactFlow();
+
+  const handleModelChange = (newModelId: string) => {
+    updateNodeData(id, { ...data, modelId: newModelId });
+  };
+
   return (
     <CanvasNodeShell type="shot" status={data.status as string} selected={selected}>
-      {ffDesc && (
-        <p style={{ color: "var(--color-text)", wordBreak: "break-word", marginBottom: 4 }}>
-          {ffDesc.slice(0, 100)}
-          {ffDesc.length > 100 ? "…" : ""}
-        </p>
-      )}
-      {motionDesc && (
-        <p style={{ color: "var(--color-text-muted)", fontSize: 11 }}>
-          🎬 {motionDesc.slice(0, 60)}
-          {motionDesc.length > 60 ? "…" : ""}
-        </p>
-      )}
-    </CanvasNodeShell>
-  );
-}
-
-export function ImageNode({ data, selected }: NodeProps) {
-  const prompt = (data.prompt as string) ?? "";
-  const size = (data.size as string) ?? "1024x1024";
-  const status = (data.status as string) ?? "idle";
-  return (
-    <CanvasNodeShell type="image" status={status} selected={selected}>
-      <p style={{ color: "var(--color-text)", wordBreak: "break-word" }}>
-        {prompt.slice(0, 100)}
-        {prompt.length > 100 ? "…" : ""}
-      </p>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          marginTop: 4,
-          fontSize: 10,
-          color: "var(--color-text-muted)",
-        }}
-      >
-        <span>{size}</span>
-        <span>{status === "done" ? "✅" : status === "running" ? "⏳" : status === "dirty" ? "⚠️" : "○"}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {ffDesc && (
+          <div style={{ fontSize: 11 }}>
+            <span style={{ color: "#3b82f6", fontWeight: 600 }}>首帧:</span>{" "}
+            <span style={{ color: "var(--color-text-muted)" }}>{ffDesc.slice(0, 80)}{ffDesc.length > 80 ? "…" : ""}</span>
+          </div>
+        )}
+        {motion && (
+          <div style={{ fontSize: 11 }}>
+            <span style={{ color: "#f59e0b", fontWeight: 600 }}>运动:</span>{" "}
+            <span style={{ color: "var(--color-text-muted)" }}>{motion}</span>
+          </div>
+        )}
+      </div>
+      <div style={{ marginTop: 6, borderTop: "1px solid var(--color-border)", paddingTop: 6 }}>
+        <ModelSelect
+          type="image"
+          value={modelId}
+          onChange={handleModelChange}
+          compact
+          placeholder="图像模型"
+        />
       </div>
     </CanvasNodeShell>
   );
 }
 
-export function VideoNode({ data, selected }: NodeProps) {
-  const preset = (data.motionPreset as string) ?? "zoom_in";
-  const duration = (data.durationSec as number) ?? 4;
-  const status = (data.status as string) ?? "idle";
-  const presetInfo = VIDEO_MOTION_PRESETS.find(p => p.id === preset);
+export function ImageNode({ id, data, selected }: NodeProps) {
+  const prompt = (data.prompt as string) ?? "";
+  const size = (data.size as string) ?? "1024x1024";
+  const modelId = (data.modelId as string) ?? "";
+  const { updateNodeData } = useReactFlow();
+
+  const handleModelChange = (newModelId: string) => {
+    updateNodeData(id, { ...data, modelId: newModelId });
+  };
+
   return (
-    <CanvasNodeShell type="video" status={status} selected={selected}>
-      <p style={{ color: "var(--color-text)" }}>
-        运镜: {presetInfo?.label ?? preset}
-      </p>
-      <p style={{ color: "var(--color-text-muted)", fontSize: 11, marginTop: 2 }}>
-        时长: {duration}s
-      </p>
+    <CanvasNodeShell type="image" status={data.status as string} selected={selected}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, backgroundColor: "#6366f122", color: "#6366f1" }}>
+          {size}
+        </span>
+        <ModelSelect
+          type="image"
+          value={modelId}
+          onChange={handleModelChange}
+          compact
+          placeholder="模型"
+        />
+      </div>
+      {prompt && (
+        <p style={{ color: "var(--color-text-muted)", fontSize: 11, margin: 0, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {prompt}
+        </p>
+      )}
+    </CanvasNodeShell>
+  );
+}
+
+export function VideoNode({ id, data, selected }: NodeProps) {
+  const motion = (data.motionPreset as string) ?? "";
+  const duration = (data.durationSec as number) ?? 4;
+  const modelId = (data.modelId as string) ?? "";
+  const { updateNodeData } = useReactFlow();
+
+  const handleModelChange = (newModelId: string) => {
+    updateNodeData(id, { ...data, modelId: newModelId });
+  };
+
+  return (
+    <CanvasNodeShell type="video" status={data.status as string} selected={selected}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, backgroundColor: "#22c55e22", color: "#22c55e" }}>
+          {duration}s
+        </span>
+        {motion && (
+          <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+            {motion}
+          </span>
+        )}
+      </div>
+      <ModelSelect
+        type="video"
+        value={modelId}
+        onChange={handleModelChange}
+        compact
+        placeholder="视频模型"
+      />
     </CanvasNodeShell>
   );
 }
@@ -292,12 +407,11 @@ export function ConcatNode({ data, selected }: NodeProps) {
   const transition = (data.transition as string) ?? "dissolve";
   return (
     <CanvasNodeShell type="concat" status={data.status as string} selected={selected}>
-      <p style={{ color: "var(--color-text)" }}>
-        转场: {transition}
-      </p>
-      <p style={{ color: "var(--color-text-muted)", fontSize: 10, marginTop: 2 }}>
-        连接上游视频片段
-      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+          转场: {transition}
+        </span>
+      </div>
     </CanvasNodeShell>
   );
 }

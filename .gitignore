@@ -12,3 +12,25 @@ wheels/
 # working directory
 .working_dir/
 .test/
+
+# ── Local logs & scratch output ──
+*.log
+*.err
+.logs/
+
+# ── Agent/tool working artifacts ──
+.stitch-analysis/
+.workbuddy/
+.zcode/
+
+# ── Visual-verification screenshots (repo root) ──
+/screenshot-*.png
+
+# ── Machine-specific dev startup scripts ──
+/start-vimax-*.ps1
+
+# ── Stray root lockfile — the real one is vimax-platform/pnpm-lock.yaml ──
+/pnpm-lock.yaml
+
+# ── TypeScript incremental build artifacts ──
+*.tsbuildinfo

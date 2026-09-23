@@ -1,0 +1,234 @@
+/* ═══════════════════════════════════════════════════════════════════
+   ViMax Unified Design Tokens — Colors
+
+   Blend: Linear (surface-ladder, lavender) × RunwayML (cinematic dark)
+          × Cursor (AI pastels, warm light)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ═══ DARK THEME (default — Linear base + RunwayML canvas) ═══ */
+
+:root {
+  /* ── Canvas & Surfaces (Linear surface-ladder) ── */
+  --color-canvas: #010102;               /* Deepest — Linear signature */
+  --color-surface-1: #0f1011;            /* Cards on canvas */
+  --color-surface-2: #141516;            /* Elevated cards, hover */
+  --color-surface-3: #18191a;            /* Dropdowns, sub-nav */
+  --color-surface-4: #191a1b;            /* Highest lifted surface */
+
+  /* RunwayML canvas (for the workspace area) */
+  --color-canvas-cinema: #000000;        /* Pure black — content-first */
+
+  /* ── Hairlines (Linear border system) ── */
+  --color-hairline: #23252a;             /* Card borders, dividers */
+  --color-hairline-strong: #34343a;      /* Stronger borders, focus */
+  --color-hairline-tertiary: #3e3e44;    /* Tertiary nested borders */
+
+  /* ── Ink / Text (Linear text stack) ── */
+  --color-ink: #f7f8f8;                  /* Primary text — light gray */
+  --color-ink-muted: #d0d6e0;            /* Secondary — slightly dimmed */
+  --color-ink-subtle: #8a8f98;           /* Tertiary — metadata */
+  --color-ink-tertiary: #62666d;         /* Quaternary — disabled, footnotes */
+  --color-ink-inverse: #000000;          /* Text on light surfaces */
+
+  /* ── Brand Accent (Linear lavender-blue) ── */
+  --color-accent: #5e6ad2;               /* Primary accent — used scarcely */
+  --color-accent-hover: #828fff;         /* Hover state */
+  --color-accent-focus: #5e69d1;         /* Focus ring tint */
+  --color-accent-subtle: rgba(94,106,210,0.08);
+  --color-accent-muted: rgba(94,106,210,0.15);
+  --color-accent-emphasis: rgba(94,106,210,0.25);
+  --color-accent-on: #ffffff;
+
+  /* ── AI Timeline Pastels (Cursor agent palette) ── */
+  --color-ai-thinking: #dfa88f;          /* Peach — AI thinking / reasoning */
+  --color-ai-reading: #9fbbe0;           /* Blue — reading context */
+  --color-ai-editing: #c0a8dd;           /* Lavender — editing/modifying */
+  --color-ai-generating: #9fc9a2;        /* Mint — generating content */
+  --color-ai-done: #c08532;              /* Gold — task complete */
+  --color-ai-error: #cf2d56;             /* Red — error state */
+
+  /* Pastel pill tokens for node statuses */
+  --color-node-idle: #8a8f98;
+  --color-node-queued: #dfa88f;
+  --color-node-running: #9fbbe0;
+  --color-node-done: #9fc9a2;
+  --color-node-error: #cf2d56;
+  --color-node-dirty: #c08532;
+
+  /* ── Semantic ── */
+  --color-success: #27a644;
+  --color-success-subtle: rgba(39,166,68,0.12);
+  --color-warning: #d97706;
+  --color-warning-subtle: rgba(217,119,6,0.12);
+  --color-danger: #cf2d56;
+  --color-danger-subtle: rgba(207,45,86,0.12);
+  --color-info: #5e6ad2;
+  --color-info-subtle: rgba(94,106,210,0.10);
+
+  /* ── Canvas Node Type Colors (RunwayML-style content coding) ── */
+  --color-node-script: #f59e0b;
+  --color-node-character: #ec4899;
+  --color-node-storyboard: #06b6d4;
+  --color-node-shot: #3b82f6;
+  --color-node-image: #8b5cf6;
+  --color-node-video: #22c55e;
+  --color-node-concat: #f97316;
+
+  /* ── Gradients (subtle, Linear-style — no decorative gradients) ── */
+  --gradient-brand: linear-gradient(135deg, #5e6ad2 0%, #828fff 100%);
+  --gradient-brand-subtle: linear-gradient(135deg, rgba(94,106,210,0.08) 0%, rgba(130,143,255,0.08) 100%);
+}
+
+/* ═══ LIGHT THEME (Cursor warm cream base) ═══ */
+
+[data-theme="light"] {
+  /* ── Canvas & Surfaces (Cursor cream system) ── */
+  --color-canvas: #f7f7f4;               /* Warm cream — Cursor signature */
+  --color-surface-1: #ffffff;            /* Pure white cards */
+  --color-surface-2: #fafaf7;            /* Slightly lifted */
+  --color-surface-3: #f0f0ec;            /* Dropdowns, sub-nav */
+  --color-surface-4: #e8e8e2;            /* Highest lift */
+
+  --color-canvas-cinema: #f5f5f0;        /* Warm off-white for workspace */
+
+  /* ── Hairlines (Cursor hairline system) ── */
+  --color-hairline: #e6e5e0;
+  --color-hairline-strong: #cfcdc4;
+  --color-hairline-tertiary: #efeee8;
+
+  /* ── Ink / Text (Cursor warm ink) ── */
+  --color-ink: #26251e;                  /* Warm near-black */
+  --color-ink-muted: #5a5852;            /* Body text */
+  --color-ink-subtle: #807d72;           /* Secondary */
+  --color-ink-tertiary: #a09c92;         /* Disabled */
+  --color-ink-inverse: #ffffff;
+
+  /* ── Brand Accent (Cursor Orange for CTAs) ── */
+  --color-accent: #f54e00;               /* Cursor Orange — CTAs only */
+  --color-accent-hover: #d04200;         /* Press state */
+  --color-accent-focus: rgba(245,78,0,0.3);
+  --color-accent-subtle: rgba(245,78,0,0.06);
+  --color-accent-muted: rgba(245,78,0,0.12);
+  --color-accent-emphasis: rgba(245,78,0,0.18);
+  --color-accent-on: #ffffff;
+
+  /* ── AI Timeline Pastels (same palette, slightly muted for light bg) ── */
+  --color-ai-thinking: #d49572;
+  --color-ai-reading: #8ba8d2;
+  --color-ai-editing: #b095d2;
+  --color-ai-generating: #8ab892;
+  --color-ai-done: #b07528;
+  --color-ai-error: #c42848;
+
+  --color-node-idle: #a09c92;
+  --color-node-queued: #d49572;
+  --color-node-running: #8ba8d2;
+  --color-node-done: #8ab892;
+  --color-node-error: #c42848;
+  --color-node-dirty: #b07528;
+
+  /* ── Semantic ── */
+  --color-success: #1f8a65;
+  --color-success-subtle: rgba(31,138,101,0.08);
+  --color-warning: #b45309;
+  --color-warning-subtle: rgba(180,83,9,0.08);
+  --color-danger: #c42848;
+  --color-danger-subtle: rgba(196,40,72,0.08);
+  --color-info: #5e6ad2;
+  --color-info-subtle: rgba(94,106,210,0.08);
+}
+
+/* ═══ Backward-compatible aliases ═══ */
+
+:root {
+  --color-bg: var(--color-canvas);
+  --color-bg-base: #000000;
+  --color-bg-raised: var(--color-surface-1);
+  --color-bg-overlay: var(--color-surface-2);
+  --color-bg-inset: #000000;
+
+  --color-surface: var(--color-surface-1);
+  --color-surface-hover: var(--color-surface-2);
+  --color-surface-elevated: var(--color-surface-3);
+  --color-surface-overlay: var(--color-surface-4);
+
+  --color-border-default: var(--color-hairline);
+  --color-border: var(--color-hairline);
+  --color-border-hover: var(--color-hairline-strong);
+  --color-border-strong: var(--color-hairline-tertiary);
+  --color-border-subtle: var(--color-hairline);
+  --color-border-accent: rgba(94,106,210,0.25);
+
+  --color-text-primary: var(--color-ink);
+  --color-text: var(--color-ink);
+  --color-text-secondary: var(--color-ink-muted);
+  --color-text-muted: var(--color-ink-subtle);
+  --color-text-tertiary: var(--color-ink-subtle);
+  --color-text-dim: var(--color-ink-tertiary);
+  --color-text-quaternary: var(--color-ink-tertiary);
+  --color-text-inverse: var(--color-ink-inverse);
+
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-active: var(--color-accent-focus);
+  --color-accent-glow: rgba(94,106,210,0.25);
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.45);
+  --shadow-accent-sm: 0 0 12px rgba(94,106,210,0.15);
+  --shadow-accent-md: 0 0 24px rgba(94,106,210,0.2);
+  --shadow-card-hover: 0 4px 16px rgba(0,0,0,0.25), 0 0 0 1px rgba(94,106,210,0.08);
+
+  --gradient-brand: linear-gradient(135deg, #5e6ad2 0%, #828fff 100%);
+  --gradient-brand-subtle: linear-gradient(135deg, rgba(94,106,210,0.08) 0%, rgba(130,143,255,0.08) 100%);
+  --gradient-hero: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(94,106,210,0.10) 0%, transparent 100%);
+  --gradient-accent: var(--gradient-brand);
+  --gradient-accent-subtle: var(--gradient-brand-subtle);
+  --gradient-card-accent: linear-gradient(180deg, rgba(94,106,210,0.04) 0%, transparent 100%);
+}
+
+[data-theme="light"] {
+  --color-bg: var(--color-canvas);
+  --color-bg-base: #f2f2ee;
+  --color-bg-raised: var(--color-surface-1);
+  --color-bg-overlay: var(--color-surface-2);
+  --color-bg-inset: #f0f0ea;
+
+  --color-surface: var(--color-surface-1);
+  --color-surface-hover: var(--color-surface-2);
+  --color-surface-elevated: var(--color-surface-3);
+  --color-surface-overlay: var(--color-surface-4);
+
+  --color-border-default: var(--color-hairline);
+  --color-border: var(--color-hairline);
+  --color-border-hover: var(--color-hairline-strong);
+  --color-border-strong: var(--color-hairline-tertiary);
+  --color-border-subtle: var(--color-hairline);
+  --color-border-accent: rgba(245,78,0,0.2);
+
+  --color-text-primary: var(--color-ink);
+  --color-text: var(--color-ink);
+  --color-text-secondary: var(--color-ink-muted);
+  --color-text-muted: var(--color-ink-subtle);
+  --color-text-tertiary: var(--color-ink-subtle);
+  --color-text-dim: var(--color-ink-tertiary);
+  --color-text-quaternary: var(--color-ink-tertiary);
+  --color-text-inverse: var(--color-ink-inverse);
+
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-active: var(--color-accent-focus);
+  --color-accent-glow: rgba(245,78,0,0.2);
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 28px rgba(0,0,0,0.08);
+  --shadow-accent-sm: 0 0 12px rgba(94,106,210,0.1);
+  --shadow-accent-md: 0 0 20px rgba(94,106,210,0.15);
+  --shadow-card-hover: 0 4px 16px rgba(0,0,0,0.06), 0 0 0 1px rgba(94,106,210,0.08);
+
+  --gradient-brand: linear-gradient(135deg, #5e6ad2 0%, #828fff 100%);
+  --gradient-hero: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(94,106,210,0.06) 0%, transparent 100%);
+  --gradient-accent: var(--gradient-brand);
+  --gradient-accent-subtle: var(--gradient-brand-subtle);
+  --gradient-card-accent: linear-gradient(180deg, rgba(94,106,210,0.03) 0%, transparent 100%);
+}

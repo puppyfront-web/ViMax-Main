@@ -13,10 +13,11 @@ import type {
 } from "@vimax/contracts";
 import { getImageModel, getVideoModel, getMotionPreset } from "@vimax/contracts";
 import { KEY_LIGHT_POSITIONS, RIM_LIGHT_PRESETS, AMBIENT_LIGHT_OPTIONS } from "@vimax/contracts";
+import { getDefaultModel, getModelById } from "../model/model.service.js";
 import { and, eq } from "drizzle-orm";
 import { config } from "../../config/env.js";
 import { getDb } from "../../infrastructure/db/client.js";
-import { assets, canvasEdges, canvasNodes, jobEvents, jobs } from "../../infrastructure/db/schema.js";
+import { assets, canvasEdges, canvasNodes, canvases, jobEvents, jobs } from "../../infrastructure/db/schema.js";
 import { getRedisQueue, jobEventChannel } from "../../infrastructure/redis/client.js";
 import { enqueueImageJob, enqueueVideoJob } from "../../infrastructure/queue/producer.js";
 import { buildStorageKey, getBucket } from "../../infrastructure/storage/s3.js";
@@ -161,7 +162,93 @@ async function collectUpstreamAssets(
   return assetIds;
 }
 
-// ── Image node executor ────────────────────────────────────────────
+// ── Model resolution helpers ─────────────────────────────────────────
+// Try DB-backed model first, fall back to hardcoded contract models.
+
+async function getTenantIdForCanvas(canvasId: string): Promise<string> {
+  const db = getDb();
+  const [canvas] = await db
+    .select({ tenantId: canvases.tenantId })
+    .from(canvases)
+    .where(eq(canvases.id, canvasId))
+    .limit(1);
+  return canvas?.tenantId ?? "default";
+}
+
+async function resolveImageModel(modelId?: string): Promise<{
+  id: string; class_path: string; base_url?: string; model?: string;
+  sizes?: string[]; supports_reference?: boolean; api_key?: string;
+}> {
+  // Try DB lookup first
+  if (modelId) {
+    const dbModel = await getModelById(modelId);
+    if (dbModel) {
+      const cfg = dbModel.config as Record<string, unknown>;
+      return {
+        id: dbModel.id,
+        class_path: (dbModel.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string,
+        base_url: (dbModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
+        model: (dbModel.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+        sizes: cfg.sizes as string[] | undefined,
+        supports_reference: cfg.supports_reference as boolean | undefined,
+        api_key: dbModel.apiKey ?? undefined,
+      };
+    }
+  }
+  // Fallback to hardcoded
+  if (modelId) {
+    const hc = getImageModel(modelId);
+    if (hc) return {
+      id: hc.id, class_path: hc.class_path,
+      base_url: hc.init_args?.base_url, model: hc.init_args?.model,
+      sizes: hc.sizes, supports_reference: hc.supports_reference,
+    };
+  }
+  // Ultimate default
+  const def = await getDefaultModel("default", "image");
+  const cfg = def.config as Record<string, unknown>;
+  return {
+    id: def.id, class_path: (def.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string,
+    base_url: (def.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
+    model: (def.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+    sizes: cfg.sizes as string[] | undefined, supports_reference: cfg.supports_reference as boolean | undefined,
+    api_key: def.apiKey ?? undefined,
+  };
+}
+
+async function resolveVideoModel(modelId?: string): Promise<{
+  id: string; class_path?: string; base_url?: string; model?: string;
+  maxDuration?: number; resolutions?: string[]; api_key?: string;
+}> {
+  if (modelId) {
+    const dbModel = await getModelById(modelId);
+    if (dbModel) {
+      const cfg = dbModel.config as Record<string, unknown>;
+      return {
+        id: dbModel.id,
+        class_path: (dbModel.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
+        base_url: (dbModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
+        model: (dbModel.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+        api_key: dbModel.apiKey ?? undefined,
+      };
+    }
+  }
+  if (modelId) {
+    const hc = getVideoModel(modelId);
+    if (hc) return {
+      id: hc.id, class_path: hc.class_path,
+      base_url: hc.init_args?.base_url, model: hc.init_args?.model,
+    };
+  }
+  const def = await getDefaultModel("default", "video");
+  const cfg = def.config as Record<string, unknown>;
+  return {
+    id: def.id, class_path: (def.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
+    base_url: (def.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
+    model: (def.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+    api_key: def.apiKey ?? undefined,
+  };
+}
 
 async function runImageNode(
   node: typeof canvasNodes.$inferSelect,
@@ -169,7 +256,7 @@ async function runImageNode(
 ): Promise<NodeRunOutput> {
   const data = node.data as ImageNodeData;
 
-  const model = getImageModel(data.modelId);
+  const model = await resolveImageModel(data.modelId);
   if (!model) throw new Error("input.unsupported_model");
 
   // Merge upstream assets with any direct reference assets
@@ -207,7 +294,7 @@ async function runImageNode(
     };
   }
 
-  const apiKey = config.arkApiKey();
+  const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const jobId = randomUUID();
@@ -236,8 +323,8 @@ async function runImageNode(
     credential: {
       class_path: model.class_path,
       api_key: apiKey,
-      base_url: model.init_args?.base_url,
-      model: model.init_args?.model,
+      base_url: model.base_url,
+      model: model.model,
     },
     input: {
       prompt: data.prompt,
@@ -306,8 +393,9 @@ async function runCharacterNode(
     .filter(Boolean)
     .join(", ");
 
-  const model = getImageModel("doubao-seedream-4-0")!;
-  const apiKey = config.arkApiKey();
+  const tenantId = await getTenantIdForCanvas(node.canvasId);
+  const model = await resolveImageModel(undefined); // default image model
+  const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const jobId = randomUUID();
@@ -333,8 +421,8 @@ async function runCharacterNode(
     credential: {
       class_path: model.class_path,
       api_key: apiKey,
-      base_url: model.init_args?.base_url,
-      model: model.init_args?.model,
+      base_url: model.base_url,
+      model: model.model,
     },
     input: {
       prompt,
@@ -421,8 +509,8 @@ async function runShotNode(
     .filter(Boolean)
     .join(" ");
 
-  const model = getImageModel("doubao-seedream-4-0")!;
-  const apiKey = config.arkApiKey();
+  const model = await resolveImageModel(undefined); // default image model
+  const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const jobId = randomUUID();
@@ -452,8 +540,8 @@ async function runShotNode(
     credential: {
       class_path: model.class_path,
       api_key: apiKey,
-      base_url: model.init_args?.base_url,
-      model: model.init_args?.model,
+      base_url: model.base_url,
+      model: model.model,
     },
     input: {
       prompt,
@@ -534,16 +622,15 @@ async function runVideoNode(
     if (a) storageKeys.push(a.storageKey);
   }
 
-  const apiKey = config.arkApiKey();
-  if (!apiKey) throw new Error("provider.invalid_key");
-
   // Resolve motion preset label
   const preset = getMotionPreset(data.motionPreset ?? "zoom_in");
   const motionDesc = preset ? `${preset.label}: ${preset.description}` : (data.motionPreset ?? "zoom in");
   const prompt = `Cinematic video, ${motionDesc}, smooth motion, high quality`;
 
   // Resolve video model
-  const videoModel = getVideoModel(data.modelId ?? "doubao-seedance-1-0-lite");
+  const videoModel = await resolveVideoModel(data.modelId);
+  const apiKey = videoModel?.api_key ?? config.arkApiKey();
+  if (!apiKey) throw new Error("provider.invalid_key");
 
   const jobId = randomUUID();
   const jobType = "shot.video" as const;
@@ -587,8 +674,8 @@ async function runVideoNode(
     credential: {
       class_path: videoModel?.class_path ?? "tools.VideoGeneratorDoubaoSeedanceYunwuAPI",
       api_key: apiKey,
-      base_url: videoModel?.init_args?.base_url ?? "https://yunwu.ai/volc/v1",
-      model: videoModel?.init_args?.model ?? "doubao-seedance-1-0-lite-t2v-250428",
+      base_url: videoModel?.base_url ?? "https://yunwu.ai/volc/v1",
+      model: videoModel?.model ?? "doubao-seedance-1-0-lite-t2v-250428",
     },
     input: {
       prompt,
@@ -714,8 +801,8 @@ export async function runCharacterView(
   if (!node) throw new Error("canvas.node_not_found");
 
   const data = node.data as CharacterNodeData;
-  const model = getImageModel("doubao-seedream-4-0")!;
-  const apiKey = config.arkApiKey();
+  const model = await resolveImageModel(undefined);
+  const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const refAssetIds: string[] = [];
@@ -765,8 +852,8 @@ export async function runCharacterView(
     credential: {
       class_path: model.class_path,
       api_key: apiKey,
-      base_url: model.init_args?.base_url,
-      model: model.init_args?.model,
+      base_url: model.base_url,
+      model: model.model,
     },
     input: { prompt, size: "1024x1024", reference_storage_keys: [] },
     callback: {
@@ -809,7 +896,8 @@ export async function runScript2Storyboard(
   const data = node.data as { content?: string };
   if (!data.content?.trim()) throw new Error("canvas.script_empty");
 
-  const apiKey = config.arkApiKey();
+  const defaultModel = await getDefaultModel("default", "image");
+  const apiKey = defaultModel.apiKey ?? config.arkApiKey();
   const jobId = randomUUID();
   const jobType = "pipeline.script2storyboard";
   const queueName = "q.pipeline.full";
@@ -869,8 +957,8 @@ export async function runMultiCameraGrid(
   const data = node.data as ShotNodeData;
   const count = gridSize === "3x3" ? 9 : 25;
   const cols = gridSize === "3x3" ? 3 : 5;
-  const model = getImageModel("doubao-seedream-4-0")!;
-  const apiKey = config.arkApiKey();
+  const model = await resolveImageModel(undefined);
+  const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const upstreamAssetIds = await collectUpstreamAssets(canvasId, nodeId);
@@ -921,7 +1009,7 @@ export async function runMultiCameraGrid(
       model_id: model.id,
       credential: {
         class_path: model.class_path, api_key: apiKey,
-        base_url: model.init_args?.base_url, model: model.init_args?.model,
+        base_url: model.base_url, model: model.model,
       },
       input: { prompt, size: "1600x900", reference_storage_keys: [] },
       callback: {
@@ -964,7 +1052,9 @@ export async function runMotionPrediction(
     .limit(1);
   if (!node || !node.outputAssetId) throw new Error("canvas.node_needs_output");
 
-  const apiKey = config.arkApiKey();
+  // Resolve video model first to get its api_key
+  const videoModel = await resolveVideoModel(undefined);
+  const apiKey = videoModel?.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const videoNodeId = randomUUID();
@@ -992,7 +1082,6 @@ export async function runMotionPrediction(
   const jobId = randomUUID();
   const jobType = "image.predict_motion";
   const queueName = "q.video.std";
-  const videoModel = getVideoModel("doubao-seedance-1-0-lite");
 
   const inputSnapshot = {
     first_frame_asset_id: node.outputAssetId,
@@ -1013,7 +1102,7 @@ export async function runMotionPrediction(
     job_id: jobId, job_type: "shot.video", model_id: "doubao-seedance-1-0-lite",
     credential: {
       class_path: videoModel?.class_path ?? "tools.VideoGeneratorDoubaoSeedanceYunwuAPI",
-      api_key: apiKey, base_url: videoModel?.init_args?.base_url,
+      api_key: apiKey, base_url: videoModel?.base_url,
     },
     input: { prompt, first_frame_storage_key: sourceAsset?.storageKey, duration_sec: seconds, resolution: "720p" },
     callback: {
@@ -1092,7 +1181,8 @@ export async function runStoryPush(
   if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
 
   const data = node.data as ShotNodeData;
-  const apiKey = config.arkApiKey();
+  const defaultModel = await getDefaultModel("default", "image");
+  const apiKey = defaultModel.apiKey ?? config.arkApiKey();
   const jobId = randomUUID();
   const jobType = "pipeline.story_push";
   const queueName = "q.pipeline.full";

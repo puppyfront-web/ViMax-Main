@@ -1,0 +1,54 @@
+/* ═══════════════════════════════════════════════════════════════════
+   ViMax Design Tokens — Shadows / Elevation
+   LibLib-style subtle card shadows + ComfyUI minimal elevation
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* === Elevation Scale (dark theme) === */
+  --shadow-none: none;
+
+  /* Subtle — card resting state, subtle lift */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.15);
+
+  /* Medium — floating elements, dropdowns, tooltips */
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.15);
+
+  /* Large — modals, dialogs, sheets */
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5), 0 4px 8px rgba(0, 0, 0, 0.15);
+
+  /* X-Large — highest elevation */
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.55), 0 8px 16px rgba(0, 0, 0, 0.2);
+
+  /* === Brand Glow === */
+  --shadow-accent-xs: 0 0 8px var(--color-accent-glow);
+  --shadow-accent-sm: 0 0 16px var(--color-accent-glow);
+  --shadow-accent-md: 0 0 24px var(--color-accent-glow);
+  --shadow-accent-lg: 0 0 40px rgba(59, 130, 246, 0.35), 0 0 16px rgba(139, 92, 246, 0.25);
+
+  /* === Interactive === */
+  --shadow-button-primary: 0 2px 8px rgba(59, 130, 246, 0.35);
+  --shadow-button-primary-hover: 0 4px 16px rgba(59, 130, 246, 0.45);
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(59, 130, 246, 0.08);
+}
+
+[data-theme="light"] {
+  --shadow-none: none;
+
+  /* Light mode — much subtler shadows (LibLib-style) */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
+
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.03);
+  --shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.1), 0 4px 8px rgba(0, 0, 0, 0.03);
+  --shadow-xl: 0 16px 40px rgba(0, 0, 0, 0.12), 0 8px 16px rgba(0, 0, 0, 0.04);
+
+  --shadow-accent-xs: 0 0 8px var(--color-accent-glow);
+  --shadow-accent-sm: 0 0 14px var(--color-accent-glow);
+  --shadow-accent-md: 0 0 20px var(--color-accent-glow);
+  --shadow-accent-lg: 0 0 32px rgba(37, 99, 235, 0.18), 0 0 12px rgba(139, 92, 246, 0.12);
+
+  --shadow-button-primary: 0 2px 6px rgba(37, 99, 235, 0.22);
+  --shadow-button-primary-hover: 0 4px 12px rgba(37, 99, 235, 0.3);
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(37, 99, 235, 0.08);
+}

@@ -1,17 +1,22 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   ReactFlow,
   Background,
   Controls,
   MiniMap,
   BackgroundVariant,
+  PanOnScrollMode,
   type Node,
+  type Edge,
   type Connection,
   type NodeChange,
-  addEdge,
 } from "@xyflow/react";
+import { toast } from "sonner";
+import { ContextMenu } from "@vimax/ui";
+import type { ContextMenuItem } from "@vimax/ui";
+import { Trash2, Copy, Play, EyeOff } from "lucide-react";
 import "@xyflow/react/dist/style.css";
 import {
   ScriptNode,
@@ -23,10 +28,15 @@ import {
   ConcatNode,
 } from "./nodes/CanvasNodes";
 import { NodeInspector } from "./panels/NodeInspector";
+import { ChatPanel } from "../chat/ChatPanel";
 import { useCanvasSnapshot, useCanvasSave } from "./hooks/useCanvasSnapshot";
 import { useNodeRun } from "./hooks/useNodeRun";
+import { useUndoRedo } from "./hooks/useUndoRedo";
+import { Undo2, Redo2 } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
-import type { CanvasNodeType } from "@vimax/contracts";
+import type { CanvasNodeType, CanvasMutation } from "@vimax/contracts";
+import { computeDagreLayout, computeZoneLayout, type LayoutDirection } from "./utils/dagre-layout";
+import { VideoWorkbench } from "../workbench/VideoWorkbench";
 
 // ── React Flow node type registry ──────────────────────────────────
 
@@ -58,11 +68,16 @@ const ZONE_OFFSET = 280; // vertical offset for stacking multiple nodes of same 
 
 interface InfiniteCanvasProps {
   canvasId: string;
+  defaultTextModelId?: string;
+  defaultImageModelId?: string;
+  defaultVideoModelId?: string;
+  initialPrompt?: string;
+  initialMode?: string;
 }
 
 // ── Component ──────────────────────────────────────────────────────
 
-export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
+export function InfiniteCanvas({ canvasId, defaultTextModelId, defaultImageModelId, defaultVideoModelId, initialPrompt, initialMode }: InfiniteCanvasProps) {
   const {
     nodes,
     setNodes,
@@ -85,6 +100,119 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
     setNodes,
     edges,
   });
+  // Undo / Redo
+  const { snapshot, undo, redo, clear, canUndo, canRedo } = useUndoRedo();
+
+
+  // ── Right panel tab state: Inspector / Chat ──
+  // Auto-switch to chat tab when coming from home page with a prompt
+  const [rightPanelTab, setRightPanelTab] = useState<"inspector" | "chat">(
+    initialPrompt ? "chat" : "inspector"
+  );
+
+  // ── Context menu state ──
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number; y: number; nodeId?: string;
+  } | null>(null);
+
+  // ── Workbench state ──
+  const [workbenchId, setWorkbenchId] = useState<string | null>(null);
+  const createWorkbench = trpc.workbench.create.useMutation();
+
+  const handleOpenWorkbench = async () => {
+    try {
+      const res = await createWorkbench.mutateAsync({
+        canvasId,
+        name: `${canvasName ?? "未命名"} - 剪辑`,
+      });
+      setWorkbenchId(res.id);
+    } catch {
+      // If workbench creation fails, use a temp ID
+      setWorkbenchId(`wb-temp-${canvasId}`);
+    }
+  };
+
+  // ── Undo / Redo handlers ──
+  const handleUndo = useCallback(() => {
+    const prev = undo(nodes, edges);
+    if (prev) {
+      setNodes(prev.nodes);
+      setEdges(prev.edges);
+      save(prev.nodes, prev.edges);
+    }
+  }, [undo, nodes, edges, setNodes, setEdges, save]);
+
+  const handleRedo = useCallback(() => {
+    const next = redo(nodes, edges);
+    if (next) {
+      setNodes(next.nodes);
+      setEdges(next.edges);
+      save(next.nodes, next.edges);
+    }
+  }, [redo, nodes, edges, setNodes, setEdges, save]);
+
+  // ── Handle canvas mutations from AI agent ──
+  const handleCanvasMutation = useCallback(
+    (mutation: CanvasMutation) => {
+      switch (mutation.type) {
+        case "nodes.add": {
+          const newNodes: Node[] = mutation.nodes.map((n) => ({
+            id: n.id,
+            type: n.type,
+            position: n.position,
+            data: { ...n.data, status: "idle" },
+          }));
+          setNodes((nds) => {
+            const updated = [...nds, ...newNodes];
+            save(updated, edges);
+            return updated;
+          });
+          break;
+        }
+        case "nodes.update": {
+          setNodes((nds) => {
+            const updated = nds.map((n) => {
+              const update = mutation.updates.find((u) => u.id === n.id);
+              return update ? { ...n, data: { ...n.data, ...update.data } } : n;
+            });
+            save(updated, edges);
+            return updated;
+          });
+          break;
+        }
+        case "nodes.remove": {
+          const idsToRemove = new Set(mutation.ids);
+          setNodes((nds) => {
+            const updated = nds.filter((n) => !idsToRemove.has(n.id));
+            save(updated, edges);
+            return updated;
+          });
+          setEdges((eds) => eds.filter((e) => !idsToRemove.has(e.source) && !idsToRemove.has(e.target)));
+          break;
+        }
+        case "edges.add": {
+          setEdges((eds) => {
+            const newEdges = mutation.edges.map((e) => ({
+              id: e.id,
+              source: e.source,
+              target: e.target,
+              sourceHandle: e.sourceHandle,
+              targetHandle: e.targetHandle,
+            }));
+            const updated = [...eds, ...newEdges];
+            save(nodes, updated);
+            return updated;
+          });
+          break;
+        }
+        case "layout.arrange": {
+          // TODO Phase 3: integrate Dagre layout
+          break;
+        }
+      }
+    },
+    [edges, nodes, save, setNodes, setEdges],
+  );
 
   // ── Node stats ───────────────────────────────────────────────────
 
@@ -101,28 +229,74 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
     return { byType, byStatus, total: nodes.length };
   }, [nodes]);
 
-  // ── Auto-arrange ─────────────────────────────────────────────────
+  // ── Auto-arrange (supports Dagre LR/TB and zone layout) ──────────
+
+  const [layoutMode, setLayoutMode] = useState<"zone" | LayoutDirection>("LR");
+
+  // ── Space+drag panning (Toonflow pattern) ────────────────────────
+  const isSpacePressed = useRef(false);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        isSpacePressed.current = true;
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        isSpacePressed.current = false;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  // ── Scroll wheel mode (pan vs zoom, user preference) ─────────────
+  const [scrollMode, setScrollMode] = useState<"zoom" | "pan">(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("vimax.scrollMode");
+      if (stored === "pan" || stored === "zoom") return stored;
+    }
+    return "zoom";
+  });
+
+  const handleScrollModeChange = useCallback((mode: "zoom" | "pan") => {
+    setScrollMode(mode);
+    localStorage.setItem("vimax.scrollMode", mode);
+  }, []);
+
+  // ── Interaction performance optimization ──────────────────────────
+  const isInteracting = useRef(false);
+  const interactionTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const handleInteractionStart = useCallback(() => {
+    isInteracting.current = true;
+    clearTimeout(interactionTimeout.current);
+  }, []);
+
+  const handleInteractionEnd = useCallback(() => {
+    interactionTimeout.current = setTimeout(() => {
+      isInteracting.current = false;
+    }, 150);
+  }, []);
 
   const handleAutoArrange = useCallback(() => {
-    const typeCounts: Record<string, number> = {};
     setNodes((nds) => {
-      const arranged = nds.map((n) => {
-        const type = (n.type ?? "image") as CanvasNodeType;
-        const zone = ZONE_LAYOUT[type] ?? { x: 100, y: 100 };
-        const idx = typeCounts[type] ?? 0;
-        typeCounts[type] = idx + 1;
-        return {
-          ...n,
-          position: {
-            x: zone.x + (idx % 3) * 20,
-            y: zone.y + Math.floor(idx / 3) * ZONE_OFFSET,
-          },
-        };
-      });
+      let arranged: Node[];
+      if (layoutMode === "zone") {
+        arranged = computeZoneLayout(nds);
+      } else {
+        arranged = computeDagreLayout(nds, edges, layoutMode);
+      }
       save(arranged, edges);
       return arranged;
     });
-  }, [edges, save, setNodes]);
+  }, [edges, save, setNodes, layoutMode]);
 
   // ── Batch generate with DAG topological ordering ──────────────────
 
@@ -188,6 +362,7 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
 
   const handleDeleteNode = useCallback(
     (nodeId: string) => {
+      snapshot(nodes, edges);
       setNodes((nds) => nds.filter((n) => n.id !== nodeId));
       setEdges((eds) =>
         eds.filter((e) => e.source !== nodeId && e.target !== nodeId),
@@ -198,7 +373,7 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
       );
       setSelectedNode(null);
     },
-    [nodes, edges, save, setNodes, setEdges],
+    [nodes, edges, save, setNodes, setEdges, snapshot],
   );
 
   // ── Update node data (from inspector editing) ─────────────────────
@@ -245,43 +420,98 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
         event.preventDefault();
         save(nodes, edges);
       }
+      // Ctrl+Z → undo
+      if ((event.ctrlKey || event.metaKey) && event.key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        const prev = undo(nodes, edges);
+        if (prev) {
+          setNodes(prev.nodes);
+          setEdges(prev.edges);
+          save(prev.nodes, prev.edges);
+        }
+      }
+      // Ctrl+Shift+Z → redo
+      if ((event.ctrlKey || event.metaKey) && event.key === "z" && event.shiftKey) {
+        event.preventDefault();
+        const next = redo(nodes, edges);
+        if (next) {
+          setNodes(next.nodes);
+          setEdges(next.edges);
+          save(next.nodes, next.edges);
+        }
+      }
     },
-    [selectedNode, handleDeleteNode, nodes, edges, save],
+    [selectedNode, handleDeleteNode, nodes, edges, save, undo, redo, setNodes, setEdges],
   );
 
   // ── Handlers ─────────────────────────────────────────────────────
 
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
-      onNodesChange(changes);
       const hasPositionChange = changes.some(
+        (c) => c.type === "position" && c.dragging === true,
+      );
+      // Snapshot before dragging starts (only on first position change)
+      if (hasPositionChange) {
+        snapshot(nodes, edges);
+      }
+      onNodesChange(changes);
+      const isDragEnd = changes.some(
         (c) => c.type === "position" && c.dragging === false,
       );
-      if (hasPositionChange) {
+      if (isDragEnd) {
         save(nodes, edges);
       }
     },
-    [onNodesChange, nodes, edges, save],
+    [onNodesChange, nodes, edges, save, snapshot],
   );
 
   const handleConnect = useCallback(
     (connection: Connection) => {
-      const newEdges = addEdge(connection, edges);
+      snapshot(nodes, edges);
+      // ReactFlow's addEdge generates "xy-edge__..." IDs which are not UUIDs.
+      // The backend requires UUID format, so we generate one manually.
+      const edge: Edge = {
+        id: crypto.randomUUID(),
+        source: connection.source,
+        target: connection.target,
+        sourceHandle: connection.sourceHandle ?? undefined,
+        targetHandle: connection.targetHandle ?? undefined,
+      };
+      const newEdges = [...edges, edge];
       setEdges(newEdges);
       save(nodes, newEdges);
     },
-    [edges, nodes, save, setEdges],
+    [edges, nodes, save, setEdges, snapshot],
   );
 
   const handleNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
       setSelectedNode(node);
+      setRightPanelTab("inspector");
     },
     [],
   );
 
   const handlePaneClick = useCallback(() => {
     setSelectedNode(null);
+    setCtxMenu(null);
+  }, []);
+
+  const handleNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      event.preventDefault();
+      setCtxMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+    },
+    [],
+  );
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handlePaneContextMenu = useCallback((event: any) => {
+    event.preventDefault?.();
+    if (event.clientX != null) {
+      setCtxMenu({ x: event.clientX, y: event.clientY });
+    }
   }, []);
 
   // ── Drop handler ─────────────────────────────────────────────────
@@ -424,7 +654,8 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
   const isDemo = canvasName.includes("离线模式");
 
   return (
-    <div style={{ display: "flex", height: "100%", width: "100%", flexDirection: "column" }}>
+    <>
+      <div style={{ display: "flex", height: "100%", width: "100%", flexDirection: "column" }}>
       {/* Demo banner */}
       {isDemo && (
         <div
@@ -464,10 +695,20 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
             onEdgesChange={onEdgesChange}
             onConnect={handleConnect}
             onNodeClick={handleNodeClick}
+            onNodeContextMenu={handleNodeContextMenu}
             onPaneClick={handlePaneClick}
+            onPaneContextMenu={handlePaneContextMenu}
+            onNodeDragStart={handleInteractionStart}
+            onNodeDragStop={handleInteractionEnd}
+            onMoveStart={handleInteractionStart}
+            onMoveEnd={handleInteractionEnd}
             nodeTypes={nodeTypes}
             defaultViewport={initialViewport}
             fitView
+            panOnDrag={isSpacePressed.current ? [0] : [1]}
+            panOnScroll={scrollMode === "pan"}
+            panOnScrollMode={PanOnScrollMode.Free}
+            selectionOnDrag={!isSpacePressed.current}
             style={{ backgroundColor: "var(--color-bg)" }}
           >
             {/* Grid background */}
@@ -511,21 +752,67 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
           </ReactFlow>
         </div>
 
-        {/* ── Right: Inspector ── */}
-        <NodeInspector
-          node={selectedNode}
-          onClose={() => setSelectedNode(null)}
-          onRunNode={runNode}
-          onDeleteNode={handleDeleteNode}
-          onUpdateNodeData={handleUpdateNodeData}
-          isRunning={isRunning}
-          runningNodeId={runningNodeId}
-          progress={progress}
-          runError={runError}
-          edges={edges}
-          nodes={nodes}
-          canvasId={canvasId}
-        />
+        {/* ── Right Panel: Tab switch Inspector / Chat ── */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            width: selectedNode || rightPanelTab === "inspector" ? undefined : 380,
+            flexShrink: 0,
+          }}
+        >
+          {/* Tab bar */}
+          <div
+            style={{
+              flexShrink: 0,
+              display: "flex",
+              borderBottom: "1px solid var(--color-border)",
+              backgroundColor: "var(--color-surface)",
+            }}
+          >
+            <TabButton
+              label="📋 属性"
+              active={rightPanelTab === "inspector"}
+              onClick={() => setRightPanelTab("inspector")}
+            />
+            <TabButton
+              label="💬 AI 助手"
+              active={rightPanelTab === "chat"}
+              onClick={() => setRightPanelTab("chat")}
+            />
+          </div>
+
+          {/* Tab content */}
+          {rightPanelTab === "inspector" && (
+            <NodeInspector
+              node={selectedNode}
+              onClose={() => {
+                setSelectedNode(null);
+              }}
+              onRunNode={runNode}
+              onDeleteNode={handleDeleteNode}
+              onUpdateNodeData={handleUpdateNodeData}
+              isRunning={isRunning}
+              runningNodeId={runningNodeId}
+              progress={progress}
+              runError={runError}
+              edges={edges}
+              nodes={nodes}
+              canvasId={canvasId}
+            />
+          )}
+          {rightPanelTab === "chat" && (
+            <ChatPanel
+              canvasId={canvasId}
+              onCanvasMutation={handleCanvasMutation}
+              visible={true}
+              defaultTextModelId={defaultTextModelId}
+              initialPrompt={initialPrompt}
+              initialMode={initialMode}
+            />
+          )}
+        </div>
       </div>
 
       {/* ── Bottom Toolbar (LibTV-style) ── */}
@@ -533,14 +820,96 @@ export function InfiniteCanvas({ canvasId }: InfiniteCanvasProps) {
         stats={stats}
         canvasName={canvasName}
         onAutoArrange={handleAutoArrange}
+        layoutMode={layoutMode}
+        onLayoutModeChange={setLayoutMode}
+        scrollMode={scrollMode}
+        onScrollModeChange={handleScrollModeChange}
         onBatchGenerate={handleBatchGenerate}
         isRunning={isRunning}
         runnableCount={runnableCount}
         uploading={uploading}
         nodes={nodes}
         runNode={runNode}
+        onOpenWorkbench={handleOpenWorkbench}
+        workbenchLoading={createWorkbench.isPending}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
       />
     </div>
+
+    {/* ── Context Menu ── */}
+    {ctxMenu && (
+      <ContextMenu
+        x={ctxMenu.x}
+        y={ctxMenu.y}
+        onClose={() => setCtxMenu(null)}
+        items={
+          ctxMenu.nodeId
+            ? [
+                {
+                  label: "运行节点",
+                  icon: <Play className="size-3.5" />,
+                  onClick: () => { if (ctxMenu.nodeId && runNode) runNode(ctxMenu.nodeId); },
+                  disabled: !runNode || isRunning,
+                },
+                {
+                  label: "复制节点",
+                  icon: <Copy className="size-3.5" />,
+                  onClick: () => {
+                    if (!ctxMenu.nodeId) return;
+                    const node = nodes.find((n) => n.id === ctxMenu.nodeId);
+                    if (node) {
+                      const newNode = {
+                        ...node,
+                        id: crypto.randomUUID(),
+                        position: { x: node.position.x + 40, y: node.position.y + 40 },
+                      };
+                      setNodes((nds) => [...nds, newNode]);
+                    }
+                  },
+                },
+                {
+                  label: "删除节点",
+                  icon: <Trash2 className="size-3.5" />,
+                  onClick: () => {
+                    if (!ctxMenu.nodeId) return;
+                    setNodes((nds) => nds.filter((n) => n.id !== ctxMenu.nodeId));
+                    setEdges((eds) =>
+                      eds.filter(
+                        (e) =>
+                          e.source !== ctxMenu.nodeId &&
+                          e.target !== ctxMenu.nodeId,
+                      ),
+                    );
+                    if (selectedNode?.id === ctxMenu.nodeId) setSelectedNode(null);
+                  },
+                  danger: true,
+                },
+              ]
+            : [
+                {
+                  label: "全部布局 (Dagre)",
+                  icon: <EyeOff className="size-3.5" />,
+                  onClick: () => {
+                    const layouted = computeDagreLayout(nodes, edges, "LR");
+                    setNodes(layouted);
+                  },
+                },
+              ]
+        }
+      />
+    )}
+
+    {/* ── Video Workbench (fullscreen overlay) ── */}
+    {workbenchId && (
+      <VideoWorkbench
+        workbenchId={workbenchId}
+        onClose={() => setWorkbenchId(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -801,24 +1170,44 @@ interface BottomToolbarProps {
   stats: { byType: Record<string, number>; byStatus: Record<string, number>; total: number };
   canvasName: string;
   onAutoArrange: () => void;
+  layoutMode: "zone" | "LR" | "TB";
+  onLayoutModeChange: (mode: "zone" | "LR" | "TB") => void;
+  scrollMode: "zoom" | "pan";
+  onScrollModeChange: (mode: "zoom" | "pan") => void;
   onBatchGenerate: () => void;
   isRunning: boolean;
   runnableCount: number;
   uploading?: boolean;
   nodes?: Node[];
   runNode?: (nodeId: string) => Promise<unknown>;
+  onOpenWorkbench?: () => void;
+  workbenchLoading?: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 function BottomToolbar({
   stats,
   canvasName,
   onAutoArrange,
+  layoutMode,
+  onLayoutModeChange,
+  scrollMode,
+  onScrollModeChange,
   onBatchGenerate,
   isRunning,
   runnableCount,
   uploading,
   nodes = [],
   runNode,
+  onOpenWorkbench,
+  workbenchLoading,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: BottomToolbarProps) {
   const doneCount = stats.byStatus["done"] ?? 0;
   const runningCount = stats.byStatus["running"] ?? 0;
@@ -871,9 +1260,109 @@ function BottomToolbar({
       <div style={{ flex: 1 }} />
 
       {/* Right: Action buttons */}
+
+      {/* Undo / Redo */}
+      <button
+        onClick={onUndo}
+        disabled={!canUndo}
+        title="撤销 (Ctrl+Z)"
+        style={{
+          padding: "3px 8px",
+          borderRadius: 6,
+          border: "1px solid var(--color-border)",
+          backgroundColor: canUndo ? "transparent" : "transparent",
+          color: canUndo ? "var(--color-text-muted)" : "var(--color-text-dim)",
+          fontSize: 11,
+          cursor: canUndo ? "pointer" : "not-allowed",
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+          opacity: canUndo ? 1 : 0.4,
+        }}
+        onMouseOver={(e) => {
+          if (!canUndo) return;
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-accent)";
+          (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text)";
+        }}
+        onMouseOut={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-border)";
+          (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text-muted)";
+        }}
+      >
+        <Undo2 className="size-3" />
+      </button>
+      <button
+        onClick={onRedo}
+        disabled={!canRedo}
+        title="重做 (Ctrl+Shift+Z)"
+        style={{
+          padding: "3px 8px",
+          borderRadius: 6,
+          border: "1px solid var(--color-border)",
+          backgroundColor: canRedo ? "transparent" : "transparent",
+          color: canRedo ? "var(--color-text-muted)" : "var(--color-text-dim)",
+          fontSize: 11,
+          cursor: canRedo ? "pointer" : "not-allowed",
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+          opacity: canRedo ? 1 : 0.4,
+        }}
+        onMouseOver={(e) => {
+          if (!canRedo) return;
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-accent)";
+          (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text)";
+        }}
+        onMouseOut={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-border)";
+          (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text-muted)";
+        }}
+      >
+        <Redo2 className="size-3" />
+      </button>
+      {/* Layout mode selector */}
+      <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+        {(["zone", "LR", "TB"] as const).map((mode) => (
+          <button
+            key={mode}
+            onClick={() => onLayoutModeChange(mode)}
+            title={
+              mode === "zone"
+                ? "LibTV 分区布局"
+                : mode === "LR"
+                  ? "Dagre 从左到右"
+                  : "Dagre 从上到下"
+            }
+            style={{
+              padding: "3px 8px",
+              border: "1px solid",
+              borderColor:
+                layoutMode === mode
+                  ? "var(--color-accent)"
+                  : "var(--color-border)",
+              backgroundColor:
+                layoutMode === mode ? "var(--color-accent)22" : "transparent",
+              color:
+                layoutMode === mode
+                  ? "var(--color-accent)"
+                  : "var(--color-text-muted)",
+              fontSize: 10,
+              cursor: "pointer",
+              fontWeight: layoutMode === mode ? 600 : 400,
+              borderLeft:
+                mode === "LR" ? "none" : undefined,
+              borderRight:
+                mode === "LR" ? "none" : undefined,
+            }}
+          >
+            {mode === "zone" ? "分区" : mode === "LR" ? "→" : "↓"}
+          </button>
+        ))}
+      </div>
+
       <button
         onClick={onAutoArrange}
-        title="按 LibTV 分区自动排列节点"
+        title={`按${layoutMode === "zone" ? "LibTV 分区" : `Dagre ${layoutMode === "LR" ? "左→右" : "上→下"}`}自动排列节点`}
         style={{
           padding: "4px 10px",
           borderRadius: 6,
@@ -897,6 +1386,38 @@ function BottomToolbar({
       >
         📐 自动排列
       </button>
+
+      {/* Scroll mode toggle: zoom vs pan */}
+      <button
+        onClick={() => onScrollModeChange(scrollMode === "zoom" ? "pan" : "zoom")}
+        title={scrollMode === "zoom" ? "滚轮: 缩放 (点击切换为平移)" : "滚轮: 平移 (点击切换为缩放)"}
+        style={{
+          padding: "3px 8px",
+          borderRadius: 6,
+          border: "1px solid var(--color-border)",
+          backgroundColor: "transparent",
+          color: "var(--color-text-muted)",
+          fontSize: 10,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+        }}
+        onMouseOver={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-accent)";
+          (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text)";
+        }}
+        onMouseOut={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-border)";
+          (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text-muted)";
+        }}
+      >
+        {scrollMode === "zoom" ? "🔍 滚轮缩放" : "🖐️ 滚轮平移"}
+      </button>
+
+      <span style={{ fontSize: 9, color: "var(--color-text-muted)", opacity: 0.5 }}>
+        Space+拖拽=平移
+      </span>
 
       {runnableCount > 0 && (
         <button
@@ -922,12 +1443,51 @@ function BottomToolbar({
         </button>
       )}
 
+      {onOpenWorkbench && (
+        <button
+          title="在视频工作台中打开，进行多轨道剪辑"
+          onClick={onOpenWorkbench}
+          disabled={workbenchLoading}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: "1px solid var(--color-border)",
+            backgroundColor: "transparent",
+            color: "var(--color-text-muted)",
+            fontSize: 11,
+            cursor: workbenchLoading ? "not-allowed" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            opacity: workbenchLoading ? 0.5 : 1,
+          }}
+          onMouseOver={(e) => {
+            if (!workbenchLoading) {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-accent)";
+              (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text)";
+            }
+          }}
+          onMouseOut={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--color-border)";
+            (e.currentTarget as HTMLButtonElement).style.color = "var(--color-text-muted)";
+          }}
+        >
+          🎬 视频剪辑
+        </button>
+      )}
+
       <button
         title="导出所有合成节点的视频"
         onClick={async () => {
           const concatNodes = nodes.filter((n) => n.type === "concat");
           if (concatNodes.length === 0) {
-            alert("请先添加合成节点");
+            toast("请先添加合成节点", {
+              style: {
+                background: "var(--color-surface)",
+                color: "var(--color-text)",
+                border: "1px solid var(--color-warning)",
+              },
+            });
             return;
           }
           if (!runNode) return;
@@ -963,6 +1523,40 @@ function BottomToolbar({
         📦 导出视频
       </button>
     </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Right Panel Tab Button
+// ══════════════════════════════════════════════════════════════════════
+
+function TabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 1,
+        padding: "8px 0",
+        border: "none",
+        borderBottom: active ? "2px solid var(--color-accent)" : "2px solid transparent",
+        backgroundColor: "transparent",
+        color: active ? "var(--color-text)" : "var(--color-text-muted)",
+        fontSize: 11,
+        fontWeight: active ? 600 : 400,
+        cursor: "pointer",
+        transition: "all 0.15s",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

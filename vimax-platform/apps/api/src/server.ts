@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createServer } from "node:http";
 import { serve } from "@hono/node-server";
 import { trpcServer } from "@hono/trpc-server";
 import { Hono } from "hono";
@@ -8,6 +9,10 @@ import { getDb } from "./infrastructure/db/client.js";
 import { startBridgeWorker, startVideoBridgeWorker } from "./infrastructure/queue/bullmq.js";
 import { startJobEventConsumer } from "./infrastructure/pubsub/consumer.js";
 import { jobSseHandler } from "./realtime/job-sse.route.js";
+import { createWebSocketServer, handleUpgrade } from "./realtime/websocket.js";
+import { initVendorRegistry } from "./domain/vendor/vendor-registry.js";
+import { initSkillRegistry } from "./domain/skill/skill-registry.js";
+import { seedModels } from "./domain/model/model.service.js";
 import { appRouter } from "./trpc/router.js";
 
 const app = new Hono();
@@ -38,6 +43,14 @@ async function bootstrap() {
   try {
     getDb();
     console.log("Database connection initialized");
+
+    // Seed default models if table is empty
+    try {
+      const seeded = await seedModels();
+      if (seeded > 0) console.log(`Seeded ${seeded} default models`);
+    } catch (err) {
+      console.warn("Model seeding skipped:", (err as Error).message);
+    }
   } catch (err) {
     console.warn("Database not connected yet:", (err as Error).message);
   }
@@ -62,9 +75,25 @@ async function bootstrap() {
     console.warn("Job event consumer not started:", (err as Error).message);
   }
 
-  serve({ fetch: app.fetch, port, hostname: host }, (info) => {
+  // Create WebSocket server
+  createWebSocketServer();
+
+  // Initialize vendor plugin system
+  initVendorRegistry();
+
+  // Initialize skill system
+  initSkillRegistry();
+
+  // Start Hono HTTP server — serve() returns the underlying http.Server
+  const httpServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
     console.log(`ViMax API listening on http://${info.address}:${info.port}`);
     console.log(`SSE endpoint: http://${info.address}:${info.port}/sse/jobs/:jobId`);
+    console.log(`WebSocket endpoint: ws://${info.address}:${info.port}/ws`);
+  });
+
+  // Handle WebSocket upgrades on the same HTTP server
+  httpServer.on("upgrade", (req, socket, head) => {
+    handleUpgrade(req, socket, head);
   });
 }
 

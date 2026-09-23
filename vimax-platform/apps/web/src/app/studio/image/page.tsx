@@ -248,7 +248,7 @@ export default function StudioImagePage() {
   // Model info for sizes
   const { data: modelData } = trpc.model.listImageModels.useQuery();
   const currentModel = modelData?.items?.find((m) => m.id === modelId);
-  const availableSizes: ImageSize[] = currentModel?.sizes ?? ["1024x1024"];
+  const availableSizes: ImageSize[] = (currentModel?.sizes as ImageSize[] | undefined) ?? ["1024x1024"];
 
   // Keep size valid when model changes
   useEffect(() => {

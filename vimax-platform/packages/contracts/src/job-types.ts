@@ -308,6 +308,20 @@ export function getVideoModel(modelId: string): VideoModelDescriptor | undefined
   return VIDEO_MODELS.find((m) => m.id === modelId);
 }
 
+// ── Default Text Model (fallback when no DB model configured) ──────────
+
+export const DEFAULT_TEXT_MODEL_ID = "doubao-pro-32k";
+
+export const DEFAULT_TEXT_MODEL = {
+  id: DEFAULT_TEXT_MODEL_ID,
+  label: "Doubao Pro 32K",
+  provider: "doubao" as const,
+  vendorId: "openai-compatible",
+  vendorModelId: "doubao-pro-32k",
+  maxTokens: 32768,
+  supportsThinking: true,
+};
+
 // ── Pipeline Job Types ─────────────────────────────────────────────
 
 export const PIPELINE_JOB_TYPES = [

@@ -214,3 +214,242 @@ export const characters = pgTable(
 
 export type Character = typeof characters.$inferSelect;
 export type NewCharacter = typeof characters.$inferInsert;
+
+// ── Agent Chat tables ──────────────────────────────────────────────────
+
+// ── Model management enums ──────────────────────────────────────────
+
+export const modelTypeEnum = pgEnum("model_type", [
+  "text",
+  "image",
+  "video",
+  "tts",
+  "embedding",
+]);
+
+// ── Model Configuration table ────────────────────────────────────────
+
+export const models = pgTable(
+  "models",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: text("tenant_id").notNull().default("default"),
+    name: text("name").notNull(),
+    type: modelTypeEnum("type").notNull(),
+    provider: text("provider").notNull(),
+    vendorId: text("vendor_id"),
+    vendorModelId: text("vendor_model_id"),
+    classPath: text("class_path"),
+    baseUrl: text("base_url"),
+    apiKey: text("api_key"),
+    config: jsonb("config").default({}),
+    isDefault: integer("is_default").default(0),
+    isEnabled: integer("is_enabled").default(1),
+    priority: integer("priority").default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tenantTypeIdx: index("models_tenant_type_idx").on(table.tenantId, table.type),
+    typeIsEnabledIdx: index("models_type_enabled_idx").on(table.type, table.isEnabled),
+  }),
+);
+
+export type ModelRow = typeof models.$inferSelect;
+export type NewModel = typeof models.$inferInsert;
+
+// ── Agent Chat tables ──────────────────────────────────────────────────
+
+export const messageRoleEnum = pgEnum("message_role", [
+  "user",
+  "assistant",
+  "system",
+]);
+
+export const messageStatusEnum = pgEnum("message_status", [
+  "pending",
+  "streaming",
+  "complete",
+  "error",
+]);
+
+export const agentConversations = pgTable(
+  "agent_conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    title: text("title"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    canvasIdIdx: index("agent_conversations_canvas_id_idx").on(table.canvasId),
+    updatedAtIdx: index("agent_conversations_updated_at_idx").on(table.updatedAt),
+  }),
+);
+
+export const agentMessages = pgTable(
+  "agent_messages",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => agentConversations.id, { onDelete: "cascade" }),
+    role: messageRoleEnum("role").notNull(),
+    content: text("content").notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    status: messageStatusEnum("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationIdIdx: index("agent_messages_conversation_id_idx").on(
+      table.conversationId,
+    ),
+    conversationIdCreatedAtIdx: index(
+      "agent_messages_conversation_id_created_at_idx",
+    ).on(table.conversationId, table.createdAt),
+  }),
+);
+
+export type AgentConversation = typeof agentConversations.$inferSelect;
+export type NewAgentConversation = typeof agentConversations.$inferInsert;
+export type AgentMessageRow = typeof agentMessages.$inferSelect;
+export type NewAgentMessage = typeof agentMessages.$inferInsert;
+
+// ── Agent Memory tables (three-tier: short-term, summaries, RAG) ──────
+
+export const agentMemoryMessages = pgTable(
+  "agent_memory_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    agentType: text("agent_type").notNull().default("production"),
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    embedding: jsonb("embedding"),
+    summarized: integer("summarized").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    canvasAgentIdx: index("agent_memory_canvas_agent_idx").on(table.canvasId, table.agentType),
+    summarizedIdx: index("agent_memory_summarized_idx").on(table.canvasId, table.summarized),
+  }),
+);
+
+export const agentMemorySummaries = pgTable(
+  "agent_memory_summaries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    agentType: text("agent_type").notNull().default("production"),
+    summary: text("summary").notNull(),
+    messageIds: jsonb("message_ids").notNull(),
+    summaryEmbedding: jsonb("summary_embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    canvasAgentIdx: index("agent_memory_summaries_canvas_agent_idx").on(table.canvasId, table.agentType),
+  }),
+);
+
+export type AgentMemoryMessage = typeof agentMemoryMessages.$inferSelect;
+export type AgentMemorySummary = typeof agentMemorySummaries.$inferSelect;
+
+// ── Video Workbench table ────────────────────────────────────────────
+
+export const workbenches = pgTable(
+  "workbenches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canvasId: uuid("canvas_id").references(() => canvases.id),
+    name: text("name").notNull(),
+    durationMs: integer("duration_ms").notNull().default(0),
+    resolution: text("resolution").notNull().default("1920x1080"),
+    fps: integer("fps").notNull().default(24),
+    tracks: jsonb("tracks").notNull().default([]),
+    coverUrl: text("cover_url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    canvasIdIdx: index("workbenches_canvas_id_idx").on(table.canvasId),
+  }),
+);
+
+export type WorkbenchRow = typeof workbenches.$inferSelect;
+
+// ── Novel Import table ───────────────────────────────────────────────
+
+export const novelImports = pgTable(
+  "novel_imports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    title: text("title"),
+    originalText: text("original_text"),
+    chapters: jsonb("chapters").notNull().default([]),
+    status: text("status").notNull().default("uploaded"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    canvasIdIdx: index("novel_imports_canvas_id_idx").on(table.canvasId),
+  }),
+);
+
+export type NovelImport = typeof novelImports.$inferSelect;
+
+// ── Auth tables ────────────────────────────────────────────────────────
+
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull().unique(),
+    name: text("name").notNull(),
+    avatarUrl: text("avatar_url"),
+    passwordHash: text("password_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    emailIdx: index("users_email_idx").on(table.email),
+  }),
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    refreshTokenHash: text("refresh_token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: index("sessions_user_id_idx").on(table.userId),
+  }),
+);
+
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Track, Clip, TrackType } from "@vimax/contracts";
+import { Clapperboard, Pause, Play, Square, X } from "lucide-react";
 import { CLIP_VISUAL_CONFIG, createDefaultTracks } from "@vimax/contracts";
 import { trpc } from "@/lib/trpc/client";
 
@@ -193,7 +194,7 @@ export function VideoWorkbench({
           position: "fixed",
           inset: 0,
           zIndex: 9999,
-          backgroundColor: "#0f0f0f",
+          backgroundColor: "var(--color-canvas-cinema)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -212,7 +213,7 @@ export function VideoWorkbench({
         position: "fixed",
         inset: 0,
         zIndex: 9999,
-        backgroundColor: "#0f0f0f",
+        backgroundColor: "var(--color-canvas-cinema)",
         display: "flex",
         flexDirection: "column",
         fontFamily: "inherit",
@@ -233,20 +234,23 @@ export function VideoWorkbench({
       >
         <button
           onClick={onClose}
+          aria-label="关闭"
           style={{
             padding: "4px 8px",
             borderRadius: 4,
             border: "none",
             backgroundColor: "transparent",
             color: "var(--color-text-muted)",
-            fontSize: 18,
             cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
           }}
         >
-          ✕
+          <X size={18} />
         </button>
-        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text)" }}>
-          🎬 视频工作台
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <Clapperboard className="size-4" />
+          视频工作台
         </span>
         <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
           {wbData?.resolution ?? resolution} · {wbData?.fps ?? fps}fps
@@ -302,7 +306,7 @@ export function VideoWorkbench({
                     ? "1/1"
                     : "16/9",
               borderRadius: 10,
-              background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+              background: "linear-gradient(135deg, var(--color-surface-3), var(--color-surface-2))",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -313,7 +317,7 @@ export function VideoWorkbench({
               onClick={togglePlay}
               style={{ fontSize: 48, color: "rgba(255,255,255,0.6)", cursor: "pointer" }}
             >
-              {isPlaying ? "⏸" : "▶"}
+              {isPlaying ? <Pause className="size-8" /> : <Play className="size-10" />}
             </span>
           </div>
 
@@ -359,10 +363,10 @@ export function VideoWorkbench({
             }}
           >
             <button onClick={togglePlay} style={controlBtn}>
-              {isPlaying ? "⏸" : "▶"}
+              {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
             </button>
-            <button onClick={stop} style={controlBtn}>
-              ⏹
+            <button onClick={stop} style={controlBtn} aria-label="停止">
+              <Square className="size-3.5" />
             </button>
             <span style={{ fontSize: 10, color: "var(--color-text-muted)" }}>
               {formatTime(playbackMs)}
@@ -377,7 +381,7 @@ export function VideoWorkbench({
                   top: -3,
                   width: 2,
                   height: 8,
-                  backgroundColor: "#ef4444",
+                  backgroundColor: "var(--color-danger)",
                   transition: "left 0.05s linear",
                 }}
               />
@@ -487,16 +491,17 @@ function TrackRow({
           </span>
           <button
             onClick={() => onRemoveTrack(track.id)}
+            aria-label="移除轨道"
             style={{
               border: "none",
               background: "none",
-              color: "#ef4444",
-              fontSize: 9,
+              color: "var(--color-danger)",
               cursor: "pointer",
               padding: 0,
+              display: "flex",
             }}
           >
-            ✕
+            <X size={9} />
           </button>
         </div>
       </div>
@@ -576,7 +581,7 @@ function TrackRow({
                   (e.currentTarget as HTMLElement).style.opacity = "0";
                 }}
               >
-                ✕
+                <X size={8} strokeWidth={3} />
               </button>
             </div>
           );

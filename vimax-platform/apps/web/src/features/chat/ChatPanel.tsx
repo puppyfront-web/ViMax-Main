@@ -2,32 +2,81 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CanvasMutation, AgentMessage } from "@vimax/contracts";
+import type { Node } from "@xyflow/react";
+import { cn } from "@vimax/ui";
+import {
+  Brain,
+  ChevronDown,
+  History,
+  Paperclip,
+  Plus,
+  SendHorizontal,
+  Sparkles,
+  Square,
+} from "lucide-react";
+import { markPromptSent, wasPromptSent } from "@/lib/prompt-dedup";
 import { useChatMessages } from "./hooks/useChatMessages";
 import { Markdown } from "./Markdown";
 import { ModelSelect } from "@/features/models/ModelSelect";
-
-// ── Chat Panel Props ────────────────────────────────────────────────
+import { PipelineStepper } from "@/features/canvas/components/PipelineStepper";
+import { NODE_TYPE_VISUALS } from "@/features/canvas/constants/node-visuals";
+import type { AutoPipelineState } from "@/features/canvas/hooks/useAutoPipeline";
 
 interface ChatPanelProps {
   canvasId: string;
-  /** Called when agent sends a canvas mutation */
   onCanvasMutation?: (mutation: CanvasMutation) => void;
-  /** Whether the panel is visible */
   visible: boolean;
-  /** Default text model ID (from home page or canvas context) */
   defaultTextModelId?: string;
-  /** Initial prompt to auto-send when conversation is ready (from home page) */
   initialPrompt?: string;
-  /** Initial creation mode (e.g. "idea" or "script") */
   initialMode?: string;
+  nodes?: Node[];
+  autoPipelineState?: AutoPipelineState;
+  startAutoPipeline?: (scriptNodeId?: string) => Promise<string | undefined>;
+  cancelAutoPipeline?: () => void;
+  /** Node ids most recently created by the agent — rendered as jump chips. */
+  recentNodeIds?: string[];
+  selectedNodeIds?: string[];
+  onFocusNode?: (nodeId: string) => void;
 }
+
+const WS_STATUS = {
+  connected: { label: "已连接", color: "var(--color-success)" },
+  connecting: { label: "连接中…", color: "var(--color-warning)" },
+  disconnected: { label: "未连接", color: "var(--color-danger)" },
+} as const;
+
+/** 空态建议指令：完整短句，点击即填入输入框 */
+const SUGGESTED_PROMPTS = [
+  "写一个关于时间旅行的短片剧本",
+  "为女主角生成一张角色肖像",
+  "改成赛博朋克风格重新分镜",
+] as const;
 
 // ── Chat Panel Component ────────────────────────────────────────────
 // Right-side panel that provides an AI chat interface for the canvas.
-// Replicates Toonflow's right-side chat box (rightChatBox) pattern.
 
-export function ChatPanel({ canvasId, onCanvasMutation, visible, defaultTextModelId, initialPrompt, initialMode }: ChatPanelProps) {
+export function ChatPanel({
+  canvasId,
+  onCanvasMutation,
+  visible,
+  defaultTextModelId,
+  initialPrompt,
+  initialMode,
+  nodes = [],
+  autoPipelineState,
+  startAutoPipeline,
+  cancelAutoPipeline,
+  recentNodeIds = [],
+  selectedNodeIds = [],
+  onFocusNode,
+}: ChatPanelProps) {
   const [modelId, setModelId] = useState(defaultTextModelId ?? "");
+  const [autoMode, setAutoMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    // Auto mode is the product default (灵感模式 = 一句话全自动出片);
+    // an explicit opt-out ("0") is the only way to turn it off.
+    return localStorage.getItem("vimax:auto-mode") !== "0";
+  });
 
   const {
     messages,
@@ -38,6 +87,7 @@ export function ChatPanel({ canvasId, onCanvasMutation, visible, defaultTextMode
     wsStatus,
     sendMessage,
     createConversation,
+    switchConversation,
     stopStreaming,
     conversations,
   } = useChatMessages({
@@ -56,21 +106,38 @@ export function ChatPanel({ canvasId, onCanvasMutation, visible, defaultTextMode
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent, thinkingContent]);
 
-  // Auto-send initial prompt from home page (once only)
+  // Auto-send initial prompt from home page (once only, skip if overlay already sent)
   const initialSentRef = useRef(false);
   useEffect(() => {
     if (initialSentRef.current) return;
     if (!initialPrompt || !conversationId) return;
+    if (wasPromptSent(canvasId, initialPrompt)) return;
     initialSentRef.current = true;
 
-    // Prefix with mode context if available
     const prefix = initialMode === "idea"
       ? "【灵感模式】请根据以下创意想法，自动完成编剧、分镜、生成视频的准备：\n\n"
       : initialMode === "script"
         ? "【剧本模式】请根据以下剧本内容，自动完成分镜和视频生成的准备：\n\n"
         : "";
     sendMessage(prefix + initialPrompt);
-  }, [conversationId, initialPrompt, initialMode, sendMessage]);
+  }, [canvasId, conversationId, initialPrompt, initialMode, sendMessage]);
+
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming && autoMode && startAutoPipeline) {
+      const script = nodes.find((n) => n.type === "script");
+      if (script) void startAutoPipeline(script.id);
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, autoMode, startAutoPipeline, nodes]);
+
+  const toggleAutoMode = useCallback(() => {
+    setAutoMode((prev) => {
+      const next = !prev;
+      localStorage.setItem("vimax:auto-mode", next ? "1" : "0");
+      return next;
+    });
+  }, []);
 
   // Handle send
   const handleSend = useCallback(() => {
@@ -102,154 +169,96 @@ export function ChatPanel({ canvasId, onCanvasMutation, visible, defaultTextMode
 
   if (!visible) return null;
 
+  const ws = WS_STATUS[wsStatus as keyof typeof WS_STATUS] ?? WS_STATUS.disconnected;
+
   return (
-    <div
-      style={{
-        width: 380,
-        flexShrink: 0,
-        borderLeft: "1px solid var(--color-border)",
-        backgroundColor: "var(--color-surface)",
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        overflow: "hidden",
-      }}
-    >
+    <div className="flex h-full w-[380px] shrink-0 flex-col overflow-hidden border-l border-[var(--color-hairline)] bg-[var(--color-surface)]">
       {/* ── Header ── */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: "10px 14px",
-          borderBottom: "1px solid var(--color-border)",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>
-          💬 AI 助手
+      <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-hairline)] px-3.5 py-2.5">
+        <span className="flex-1 text-[13px] font-semibold text-[var(--color-ink)]">AI 助手</span>
+
+        <button
+          type="button"
+          onClick={toggleAutoMode}
+          title={autoMode ? "自动模式：Chat 完成后自动跑全流程" : "手动模式：需点击「全自动出片」"}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors",
+            autoMode
+              ? "border-[var(--color-accent)] bg-[var(--color-accent-subtle)] text-[var(--color-accent)]"
+              : "border-[var(--color-hairline)] text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)]",
+          )}
+        >
+          <Sparkles className="size-2.5" />
+          {autoMode ? "自动" : "手动"}
+        </button>
+
+        <ModelSelect
+          type="text"
+          value={modelId}
+          onChange={setModelId}
+          compact
+          placeholder="模型"
+        />
+
+        <span className="inline-flex items-center gap-1.5 text-[10px]" style={{ color: ws.color }}>
+          <span className="size-1.5 rounded-full" style={{ backgroundColor: ws.color }} />
+          {ws.label}
         </span>
 
-        {/* Model selector */}
-        <div style={{ flexShrink: 0 }}>
-          <ModelSelect
-            type="text"
-            value={modelId}
-            onChange={setModelId}
-            compact
-            placeholder="模型"
-          />
-        </div>
-
-        {/* Connection status indicator */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            fontSize: 10,
-            color:
-              wsStatus === "connected"
-                ? "#22c55e"
-                : wsStatus === "connecting"
-                  ? "#f59e0b"
-                  : "#ef4444",
-          }}
-        >
-          <div
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              backgroundColor:
-                wsStatus === "connected"
-                  ? "#22c55e"
-                  : wsStatus === "connecting"
-                    ? "#f59e0b"
-                    : "#ef4444",
-            }}
-          />
-          {wsStatus === "connected"
-            ? "已连接"
-            : wsStatus === "connecting"
-              ? "连接中…"
-              : "未连接"}
-        </div>
-
-        {/* New conversation button */}
         <button
+          type="button"
           onClick={async () => {
             await createConversation();
           }}
           title="新建会话"
-          style={{
-            padding: "3px 8px",
-            borderRadius: 5,
-            border: "1px solid var(--color-border)",
-            backgroundColor: "transparent",
-            color: "var(--color-text-muted)",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
+          className="inline-flex items-center gap-1 rounded-md p-1.5 text-[var(--color-ink-subtle)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink)]"
         >
-          ✨ 新会话
+          <Plus className="size-3.5" />
         </button>
       </div>
 
+      {autoPipelineState && (
+        <PipelineStepper
+          state={autoPipelineState}
+          onCancel={cancelAutoPipeline}
+        />
+      )}
+
       {/* ── Conversation list (collapsible) ── */}
       {conversations.length > 1 && (
-        <div
-          style={{
-            flexShrink: 0,
-            borderBottom: showConvList ? "1px solid var(--color-border)" : "none",
-          }}
-        >
+        <div className="shrink-0 border-b border-[var(--color-hairline)]">
           <button
+            type="button"
             onClick={() => setShowConvList(!showConvList)}
-            style={{
-              width: "100%",
-              padding: "6px 14px",
-              border: "none",
-              backgroundColor: "transparent",
-              color: "var(--color-text-muted)",
-              fontSize: 10,
-              cursor: "pointer",
-              textAlign: "left",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-            }}
+            className="flex w-full items-center gap-1.5 px-3.5 py-1.5 text-left text-[10px] text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
           >
-            📋 历史会话 ({conversations.length}){" "}
-            {showConvList ? "▲" : "▼"}
+            <History className="size-3" />
+            历史会话 ({conversations.length})
+            <ChevronDown className={cn("size-3 transition-transform", showConvList && "rotate-180")} />
           </button>
 
           {showConvList && (
-            <div style={{ maxHeight: 120, overflowY: "auto" }}>
+            <div className="max-h-[120px] overflow-y-auto border-t border-[var(--color-hairline)]">
               {conversations.map((conv) => (
-                <div
+                <button
                   key={conv.id}
+                  type="button"
+                  disabled={isStreaming}
+                  title={isStreaming ? "生成中，暂不能切换会话" : "切换到此会话"}
                   onClick={() => {
-                    // useChatMessages.switchConversation(conv.id);
+                    if (isStreaming || conv.id === conversationId) return;
+                    switchConversation(conv.id);
                     setShowConvList(false);
                   }}
-                  style={{
-                    padding: "5px 14px",
-                    fontSize: 11,
-                    color:
-                      conv.id === conversationId
-                        ? "var(--color-accent)"
-                        : "var(--color-text-muted)",
-                    backgroundColor:
-                      conv.id === conversationId
-                        ? "var(--color-bg)"
-                        : "transparent",
-                    cursor: "pointer",
-                    borderBottom: "1px solid var(--color-border)",
-                  }}
+                  className={cn(
+                    "block w-full cursor-pointer truncate border-b border-[var(--color-hairline)] px-3.5 py-1.5 text-left text-[11px] transition-colors last:border-b-0 disabled:cursor-not-allowed disabled:opacity-60",
+                    conv.id === conversationId
+                      ? "bg-[var(--color-accent-subtle)] text-[var(--color-accent)]"
+                      : "text-[var(--color-ink-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-ink)]",
+                  )}
                 >
                   {conv.title ?? `会话 ${conv.id.slice(0, 8)}…`}
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -257,50 +266,30 @@ export function ChatPanel({ canvasId, onCanvasMutation, visible, defaultTextMode
       )}
 
       {/* ── Messages area ── */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "10px 14px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
+      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 py-2.5">
         {/* Empty state */}
         {messages.length === 0 && !isStreaming && (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              opacity: 0.5,
-            }}
-          >
-            <span style={{ fontSize: 32 }}>🤖</span>
-            <span style={{ fontSize: 13, color: "var(--color-text-muted)" }}>
-              AI 助手准备就绪
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 py-8 text-center">
+            <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--color-accent-subtle)] text-[var(--color-accent)]">
+              <Sparkles className="size-4.5" />
             </span>
-            <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-              输入指令开始创作
-            </span>
-            <div
-              style={{
-                marginTop: 8,
-                display: "flex",
-                flexDirection: "column",
-                gap: 4,
-                fontSize: 10,
-                color: "var(--color-text-muted)",
-                opacity: 0.7,
-              }}
-            >
-              <span>💡 "写一个关于…的剧本"</span>
-              <span>💡 "生成角色肖像"</span>
-              <span>💡 "使用动漫风格"</span>
+            <span className="text-[13px] font-medium text-[var(--color-ink)]">AI 助手准备就绪</span>
+            <span className="text-[11px] text-[var(--color-ink-subtle)]">输入指令开始创作，或试试：</span>
+            <div className="mt-3 flex max-w-full flex-col items-center gap-1.5 text-[10px] text-[var(--color-ink-subtle)]">
+              {SUGGESTED_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => {
+                    setInputValue(prompt);
+                    inputRef.current?.focus();
+                  }}
+                  title="点击填入输入框"
+                  className="max-w-full truncate rounded-full border border-[var(--color-hairline)] px-2.5 py-1 transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-accent-subtle)] hover:text-[var(--color-accent)]"
+                >
+                  {prompt}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -312,173 +301,137 @@ export function ChatPanel({ canvasId, onCanvasMutation, visible, defaultTextMode
 
         {/* Thinking block */}
         {thinkingContent && (
-          <div
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              backgroundColor: "#6366f110",
-              border: "1px solid #6366f130",
-              fontSize: 11,
-              color: "#818cf8",
-              lineHeight: 1.5,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                marginBottom: 4,
-                fontSize: 10,
-                fontWeight: 600,
-              }}
-            >
-              🧠 思考中…
+          <div className="rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-2)] px-3 py-2 text-[11px] leading-relaxed">
+            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold text-[var(--color-ink-subtle)]">
+              <Brain className="size-3" />
+              思考中…
             </div>
-            <div style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>
-              {thinkingContent}
-            </div>
+            <div className="whitespace-pre-wrap text-[var(--color-ink-muted)]">{thinkingContent}</div>
           </div>
         )}
 
         {/* Streaming message */}
         {isStreaming && streamingContent && (
-          <div
-            style={{
-              padding: "10px 12px",
-              borderRadius: 8,
-              backgroundColor: "var(--color-bg)",
-              border: "1px solid var(--color-border)",
-              fontSize: 12,
-              color: "var(--color-text)",
-              lineHeight: 1.6,
-              whiteSpace: "pre-wrap",
-            }}
-          >
+          <div className="rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-2)] px-3 py-2.5 text-[12px] leading-relaxed whitespace-pre-wrap text-[var(--color-ink)]">
             {streamingContent}
-            <span
-              style={{
-                display: "inline-block",
-                width: 2,
-                height: 14,
-                backgroundColor: "var(--color-accent)",
-                marginLeft: 2,
-                verticalAlign: "text-bottom",
-                animation: "blink 1s infinite",
-              }}
-            />
+            <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-blink bg-[var(--color-accent)] align-text-bottom" />
           </div>
         )}
 
         {/* Streaming indicator (no content yet) */}
         {isStreaming && !streamingContent && !thinkingContent && (
-          <div
-            style={{
-              padding: "10px 12px",
-              borderRadius: 8,
-              backgroundColor: "var(--color-bg)",
-              border: "1px solid var(--color-border)",
-              display: "flex",
-              gap: 4,
-              alignItems: "center",
-            }}
-          >
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-2)] px-3 py-2.5">
             <div className="chat-typing-dots">
               <span /><span /><span />
             </div>
-            <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-              AI 正在思考…
-            </span>
+            <span className="text-[11px] text-[var(--color-ink-muted)]">AI 正在思考…</span>
           </div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
+      {/* ── Agent-created node chips: click to focus on canvas ── */}
+      {recentNodeIds.length > 0 && onFocusNode && (
+        <div className="flex shrink-0 gap-1.5 overflow-x-auto border-t border-[var(--color-hairline)] px-3.5 py-2">
+          {recentNodeIds.map((nodeId) => {
+            const node = nodes.find((n) => n.id === nodeId);
+            if (!node) return null;
+            const data = node.data as Record<string, unknown>;
+            const label =
+              (data.content as string) ??
+              (data.prompt as string) ??
+              (data.ffDesc as string) ??
+              (data.name as string) ??
+              "";
+            const typeLabel = NODE_TYPE_VISUALS[node.type as keyof typeof NODE_TYPE_VISUALS]?.label ?? node.type;
+            return (
+              <button
+                key={nodeId}
+                type="button"
+                title="点击在画布上定位该节点"
+                onClick={() => onFocusNode(nodeId)}
+                className="shrink-0 whitespace-nowrap rounded-full border border-[var(--color-accent)] bg-[var(--color-accent-subtle)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-muted)]"
+              >
+                {typeLabel} {label.slice(0, 12)}{label.length > 12 ? "…" : ""}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* ── Input area ── */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: "10px 14px",
-          borderTop: "1px solid var(--color-border)",
-          display: "flex",
-          gap: 8,
-          alignItems: "flex-end",
-        }}
-      >
-        <textarea
-          ref={inputRef}
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={
-            conversationId ? "输入指令… (Enter 发送, Shift+Enter 换行)" : "点击「新会话」开始…"
-          }
-          disabled={!conversationId && !isStreaming}
-          rows={1}
-          style={{
-            flex: 1,
-            resize: "none",
-            padding: "8px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--color-border)",
-            backgroundColor: "var(--color-bg)",
-            color: "var(--color-text)",
-            fontSize: 12,
-            lineHeight: 1.5,
-            outline: "none",
-            maxHeight: 120,
-            fontFamily: "inherit",
-          }}
-          onFocus={(e) => {
-            (e.target as HTMLTextAreaElement).style.borderColor =
-              "var(--color-accent)";
-          }}
-          onBlur={(e) => {
-            (e.target as HTMLTextAreaElement).style.borderColor =
-              "var(--color-border)";
-          }}
-        />
+      <div className="flex shrink-0 items-end gap-2 border-t border-[var(--color-hairline)] px-3.5 py-2.5">
+        <div className="flex flex-1 flex-col gap-1.5">
+          {selectedNodeIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const quoted = selectedNodeIds
+                  .map((id) => {
+                    const node = nodes.find((n) => n.id === id);
+                    if (!node) return null;
+                    const data = node.data as Record<string, unknown>;
+                    const text =
+                      (data.content as string) ??
+                      (data.prompt as string) ??
+                      (data.ffDesc as string) ??
+                      (data.name as string) ??
+                      "";
+                    return `- [${node.type}] ${text.slice(0, 80)}`;
+                  })
+                  .filter(Boolean)
+                  .join("\n");
+                setInputValue(
+                  (prev) =>
+                    (prev ? `${prev}\n` : "") +
+                    `请参考以下选中的画布节点：\n${quoted}\n`,
+                );
+                inputRef.current?.focus();
+              }}
+              className="inline-flex items-center gap-1 self-start rounded-full border border-[var(--color-hairline-strong)] px-2 py-0.5 text-[10px] font-medium text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+            >
+              <Paperclip className="size-2.5" />
+              引用选中节点 ({selectedNodeIds.length})
+            </button>
+          )}
+          <textarea
+            ref={inputRef}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              conversationId ? "输入指令… (Enter 发送, Shift+Enter 换行)" : "点击「新会话」开始…"
+            }
+            disabled={!conversationId && !isStreaming}
+            rows={1}
+            className="max-h-[120px] w-full flex-1 resize-none rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-2)] px-2.5 py-2 text-[12px] leading-relaxed text-[var(--color-ink)] outline-none transition-colors placeholder:text-[var(--color-ink-tertiary)] focus:border-[var(--color-accent)] disabled:opacity-60"
+          />
+        </div>
         {isStreaming ? (
           <button
+            type="button"
             onClick={stopStreaming}
             title="停止生成"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid #ef4444",
-              backgroundColor: "#ef444422",
-              color: "#ef4444",
-              fontSize: 12,
-              cursor: "pointer",
-              fontWeight: 600,
-            }}
+            className="flex items-center justify-center rounded-lg border border-[var(--color-danger)] p-2.5 text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-subtle)]"
           >
-            ⏹
+            <Square className="size-3.5" />
           </button>
         ) : (
           <button
+            type="button"
             onClick={handleSend}
             disabled={!inputValue.trim() || !conversationId}
             title="发送消息 (Enter)"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--color-accent)",
-              backgroundColor:
-                inputValue.trim() && conversationId
-                  ? "var(--color-accent)"
-                  : "transparent",
-              color:
-                inputValue.trim() && conversationId ? "#fff" : "var(--color-text-muted)",
-              fontSize: 12,
-              cursor:
-                inputValue.trim() && conversationId ? "pointer" : "not-allowed",
-              fontWeight: 600,
-              transition: "all 0.15s",
-            }}
+            aria-label="发送消息"
+            className={cn(
+              "flex items-center justify-center rounded-lg p-2.5 transition-colors",
+              inputValue.trim() && conversationId
+                ? "bg-[var(--color-accent)] text-[var(--color-accent-on)] hover:bg-[var(--color-accent-hover)]"
+                : "border border-[var(--color-hairline)] text-[var(--color-ink-tertiary)]",
+            )}
           >
-            ➤
+            <SendHorizontal className="size-3.5" />
           </button>
         )}
       </div>
@@ -501,42 +454,23 @@ function ChatMessageBubble({ message }: { message: AgentMessage }) {
   const thinking = metadata?.thinking as string | undefined;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: isUser ? "flex-end" : "flex-start",
-        gap: 4,
-      }}
-    >
+    <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
       {/* Role label */}
-      <span
-        style={{
-          fontSize: 9,
-          color: "var(--color-text-muted)",
-          fontWeight: 600,
-          padding: "0 4px",
-        }}
-      >
-        {isUser ? "👤 你" : "🤖 AI"}
+      <span className="px-1 text-[9px] font-semibold tracking-wide text-[var(--color-ink-tertiary)]">
+        {isUser ? "你" : "AI"}
       </span>
 
       {/* Message bubble */}
       <div
-        style={{
-          maxWidth: "90%",
-          padding: "8px 12px",
-          borderRadius: isUser ? "12px 12px 4px 12px" : "12px 12px 12px 4px",
-          backgroundColor: isUser ? "var(--color-accent)" : "var(--color-bg)",
-          color: isUser ? "#fff" : "var(--color-text)",
-          fontSize: 12,
-          lineHeight: 1.6,
-          wordBreak: "break-word",
-          border: isUser ? "none" : "1px solid var(--color-border)",
-        }}
+        className={cn(
+          "max-w-[90%] px-3 py-2 text-[12px] leading-relaxed break-words",
+          isUser
+            ? "rounded-xl rounded-br-sm bg-[var(--color-accent)] text-[var(--color-accent-on)]"
+            : "rounded-xl rounded-bl-sm border border-[var(--color-hairline)] bg-[var(--color-surface-2)] text-[var(--color-ink)]",
+        )}
       >
         {isUser ? (
-          <span style={{ whiteSpace: "pre-wrap" }}>{message.content}</span>
+          <span className="whitespace-pre-wrap">{message.content}</span>
         ) : (
           <Markdown content={message.content} />
         )}
@@ -545,78 +479,44 @@ function ChatMessageBubble({ message }: { message: AgentMessage }) {
       {/* Thinking (collapsible) */}
       {thinking && (
         <button
+          type="button"
           onClick={() => setExpanded(!expanded)}
-          style={{
-            padding: "2px 8px",
-            borderRadius: 4,
-            border: "1px solid #6366f130",
-            backgroundColor: "#6366f108",
-            color: "#818cf8",
-            fontSize: 9,
-            cursor: "pointer",
-          }}
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
         >
-          🧠 {expanded ? "隐藏" : "显示"}推理过程
+          <Brain className="size-2.5" />
+          {expanded ? "隐藏" : "显示"}推理过程
         </button>
       )}
       {thinking && expanded && (
-        <div
-          style={{
-            maxWidth: "90%",
-            padding: "6px 10px",
-            borderRadius: 6,
-            backgroundColor: "#6366f108",
-            border: "1px solid #6366f120",
-            fontSize: 10,
-            color: "#818cf8",
-            lineHeight: 1.5,
-            whiteSpace: "pre-wrap",
-            opacity: 0.8,
-          }}
-        >
+        <div className="max-w-[90%] whitespace-pre-wrap rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-2)] px-2.5 py-1.5 text-[10px] leading-relaxed text-[var(--color-ink-muted)]">
           {thinking}
         </div>
       )}
 
       {/* Tool calls */}
       {toolCalls.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            gap: 4,
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="flex flex-wrap gap-1">
           {toolCalls.map((tc, i) => {
             const statusColor =
-              tc.status === "completed" ? "var(--color-ai-generating)" :
-              tc.status === "running" ? "var(--color-ai-reading)" :
+              tc.status === "completed" ? "var(--color-success)" :
+              tc.status === "running" ? "var(--color-ai-thinking)" :
               tc.status === "failed" ? "var(--color-ai-error)" :
               "var(--color-ink-subtle)";
             return (
-            <span
-              key={i}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-[var(--tracking-eyebrow)]"
-              style={{
-                color: "#ffffff",
-                backgroundColor: statusColor,
-              }}
-            >
-              {tc.name}
-            </span>
-          )})}
+              <span
+                key={i}
+                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.06em]"
+                style={{ color: statusColor, borderColor: statusColor }}
+              >
+                {tc.name}
+              </span>
+            );
+          })}
         </div>
       )}
 
       {/* Timestamp */}
-      <span
-        style={{
-          fontSize: 9,
-          color: "var(--color-text-muted)",
-          opacity: 0.5,
-          padding: "0 4px",
-        }}
-      >
+      <span className="px-1 text-[9px] text-[var(--color-ink-tertiary)]">
         {new Date(message.createdAt).toLocaleTimeString("zh-CN", {
           hour: "2-digit",
           minute: "2-digit",

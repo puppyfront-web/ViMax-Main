@@ -1,8 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, Loader2, X } from "lucide-react";
 import type { ImageSize } from "@vimax/contracts";
 import { trpc } from "@/lib/trpc/client";
+import { SegmentedControl } from "@vimax/ui";
+import { toast } from "sonner";
+import { useTranslations } from "next-intl";
 
 // ---------------------------------------------------------------------------
 // Types (local to this page; contracts are imported via tRPC inference)
@@ -21,32 +25,6 @@ interface HistoryItem {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
-
-function ModeToggle({
-  mode,
-  onChange,
-}: {
-  mode: "t2i" | "i2i";
-  onChange: (m: "t2i" | "i2i") => void;
-}) {
-  return (
-    <div className="flex rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] overflow-hidden">
-      {(["t2i", "i2i"] as const).map((m) => (
-        <button
-          key={m}
-          onClick={() => onChange(m)}
-          className={`px-4 py-1.5 text-sm font-medium transition ${
-            mode === m
-              ? "bg-[var(--color-accent)] text-white"
-              : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-          }`}
-        >
-          {m === "t2i" ? "文生图" : "图生图"}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function ModelSelect({
   value,
@@ -106,6 +84,7 @@ function ReferenceUploader({
   onUpload: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
+  const t = useTranslations("studio");
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const requestUpload = trpc.asset.requestUpload.useMutation();
@@ -171,19 +150,23 @@ function ReferenceUploader({
             className="relative w-14 h-14 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] flex items-center justify-center text-xs text-[var(--color-text-muted)]"
           >
             <button
+              type="button"
               onClick={() => onRemove(id)}
-              className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] flex items-center justify-center"
+              aria-label={t("refRemove")}
+              className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--color-danger)] text-[10px] text-white"
             >
               ×
             </button>
-            图
+            {t("refThumb")}
           </div>
         ))}
         {assetIds.length < 4 && (
           <button
+            type="button"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            className="w-14 h-14 rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] flex items-center justify-center text-[var(--color-text-muted)] hover:border-[var(--color-accent)] transition text-2xl disabled:opacity-50"
+            aria-label={t("refUpload")}
+            className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)] text-2xl text-[var(--color-ink-subtle)] transition-colors hover:border-[var(--color-accent)] disabled:opacity-50"
           >
             {uploading ? "…" : "+"}
           </button>
@@ -216,6 +199,7 @@ function ProgressBar({ percent }: { percent: number }) {
 // ---------------------------------------------------------------------------
 
 export default function StudioImagePage() {
+  const t = useTranslations("studio");
   const [mode, setMode] = useState<"t2i" | "i2i">("t2i");
   const [prompt, setPrompt] = useState("");
   const [modelId, setModelId] = useState("doubao-seedream-4-0");
@@ -350,55 +334,62 @@ export default function StudioImagePage() {
   const isGenerating = jobStatus === "queued" || jobStatus === "running";
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
       {/* Header */}
-      <header className="h-12 flex items-center px-4 border-b border-[var(--color-border)] shrink-0">
-        <h1 className="text-sm font-semibold tracking-wide">
-          ViMax Studio · 生图工坊
+      <header className="flex h-12 shrink-0 items-center border-b border-[var(--color-hairline)] px-4">
+        <h1 className="text-sm font-semibold tracking-wide text-[var(--color-ink)]">
+          {t("brand")}
         </h1>
       </header>
 
-      {/* Body */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Body — stacked on mobile, three panes on desktop */}
+      <div className="flex flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         {/* Left: Parameters (320px) */}
-        <aside className="w-80 shrink-0 border-r border-[var(--color-border)] flex flex-col p-4 gap-4 overflow-y-auto">
-          <ModeToggle mode={mode} onChange={setMode} />
+        <aside className="flex shrink-0 flex-col gap-4 border-b border-[var(--color-hairline)] p-4 lg:w-80 lg:border-b-0 lg:border-r lg:overflow-y-auto">
+          <SegmentedControl
+            ariaLabel={t("modeT2I")}
+            fullWidth
+            value={mode}
+            onChange={(v) => setMode(v as "t2i" | "i2i")}
+            items={[
+              { value: "t2i", label: t("modeT2I") },
+              { value: "i2i", label: t("modeI2I") },
+            ]}
+          />
 
           <div>
-            <label className="text-xs text-[var(--color-text-muted)] mb-1 block">
-              Prompt
+            <label className="mb-1 block text-xs text-[var(--color-ink-subtle)]">
+              {t("promptLabel")}
             </label>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
-                mode === "t2i"
-                  ? "描述你想要的画面…"
-                  : "描述你想要的画面，可引用参考图的元素…"
+                mode === "t2i" ? t("promptPlaceholderT2I") : t("promptPlaceholderI2I")
               }
               rows={4}
-              className="w-full rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)] resize-none"
+              className="w-full resize-none rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)] px-3 py-2 text-sm text-[var(--color-ink)] placeholder-[var(--color-ink-tertiary)] transition-colors focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-focus)]"
             />
           </div>
 
           <div>
-            <label className="text-xs text-[var(--color-text-muted)] mb-1 block">
-              模型
+            <label className="mb-1 block text-xs text-[var(--color-ink-subtle)]">
+              {t("modelLabel")}
             </label>
             <ModelSelect value={modelId} onChange={setModelId} />
           </div>
 
           <div>
-            <label className="text-xs text-[var(--color-text-muted)] mb-1 block">
-              尺寸
+            <label className="mb-1 block text-xs text-[var(--color-ink-subtle)]">
+              {t("sizeLabel")}
             </label>
             <SizeSelect value={size} onChange={setSize} sizes={availableSizes} />
           </div>
 
           {mode === "i2i" && (
             <div>
-              <label className="text-xs text-[var(--color-text-muted)] mb-1 block">
-                参考图 (最多 4 张)
+              <label className="mb-1 block text-xs text-[var(--color-ink-subtle)]">
+                {t("refLabel")}
               </label>
               <ReferenceUploader
                 assetIds={refAssetIds}
@@ -411,42 +402,44 @@ export default function StudioImagePage() {
           <button
             onClick={handleGenerate}
             disabled={!prompt.trim() || isGenerating}
-            className="mt-auto w-full rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 text-sm font-semibold transition"
+            aria-label={isGenerating ? t("generating") : t("generate")}
+            className="mt-auto w-full rounded-lg bg-[var(--color-accent)] py-2.5 text-sm font-semibold text-[var(--color-accent-on)] transition-colors hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {isGenerating ? "生成中…" : "生成"}
+            {isGenerating ? t("generating") : t("generate")}
           </button>
         </aside>
 
         {/* Center: Preview */}
-        <main className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
+        <main className="flex flex-1 flex-col items-center justify-center p-6">
           {!activeJobId && (
-            <p className="text-[var(--color-text-muted)] text-sm">
-              输入 Prompt，点击「生成」开始
+            <p className="text-sm text-[var(--color-ink-subtle)]">
+              {t("emptyHint")}
             </p>
           )}
 
           {activeJobId && (
             <div className="w-full max-w-2xl flex flex-col items-center gap-4">
               {/* Status bar */}
-              <div className="w-full flex items-center gap-3">
+              <div className="flex w-full items-center gap-3">
                 <div
-                  className={`w-2 h-2 rounded-full ${
+                  className={`h-2 w-2 shrink-0 rounded-full ${
                     jobStatus === "succeeded" || jobStatus === "cached"
-                      ? "bg-green-400"
+                      ? "bg-[var(--color-success)]"
                       : jobStatus === "failed"
-                        ? "bg-red-400"
-                        : "bg-[var(--color-accent)] animate-pulse"
+                        ? "bg-[var(--color-danger)]"
+                        : "animate-pulse bg-[var(--color-accent)]"
                   }`}
+                  aria-hidden
                 />
-                <span className="text-sm text-[var(--color-text-muted)]">
-                  {jobStatus === "queued" && "排队中…"}
-                  {jobStatus === "running" && `生成中 ${jobProgress}%`}
-                  {jobStatus === "succeeded" && "已完成"}
-                  {jobStatus === "cached" && "缓存命中"}
-                  {jobStatus === "failed" && "失败"}
+                <span className="text-sm text-[var(--color-ink-subtle)]" role="status">
+                  {jobStatus === "queued" && t("statusQueued")}
+                  {jobStatus === "running" && t("statusRunning", { percent: jobProgress })}
+                  {jobStatus === "succeeded" && t("statusSucceeded")}
+                  {jobStatus === "cached" && t("statusCached")}
+                  {jobStatus === "failed" && t("statusFailed")}
                 </span>
                 {activeJobId && (
-                  <span className="text-xs text-[var(--color-text-muted)] ml-auto font-mono">
+                  <span className="ml-auto font-mono text-xs text-[var(--color-ink-tertiary)]">
                     {activeJobId.slice(0, 8)}
                   </span>
                 )}
@@ -456,19 +449,27 @@ export default function StudioImagePage() {
 
               {/* Error */}
               {errorMessage && (
-                <div className="w-full rounded-lg bg-red-500/10 border border-red-500/30 px-4 py-2 text-sm text-red-400">
+                <div
+                  role="alert"
+                  className="w-full rounded-lg border px-4 py-2 text-sm"
+                  style={{
+                    borderColor: "color-mix(in srgb, var(--color-danger) 35%, transparent)",
+                    backgroundColor: "color-mix(in srgb, var(--color-danger) 10%, transparent)",
+                    color: "var(--color-danger)",
+                  }}
+                >
                   {errorMessage}
                 </div>
               )}
 
               {/* Output image */}
               {outputUrl && (
-                <div className="w-full rounded-xl overflow-hidden border border-[var(--color-border)]">
+                <div className="w-full overflow-hidden rounded-xl border border-[var(--color-hairline-strong)]">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={outputUrl}
-                    alt="Generated"
-                    className="w-full h-auto"
+                    alt={t("generatedImageAlt")}
+                    className="h-auto w-full"
                   />
                 </div>
               )}
@@ -479,15 +480,24 @@ export default function StudioImagePage() {
                   <a
                     href={outputUrl}
                     download
-                    className="rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] px-4 py-1.5 text-sm hover:border-[var(--color-accent)] transition"
+                    className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)] px-4 py-1.5 text-sm text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                   >
-                    下载
+                    {t("download")}
                   </a>
                   <button
-                    onClick={() => navigator.clipboard.writeText(outputUrl)}
-                    className="rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] px-4 py-1.5 text-sm hover:border-[var(--color-accent)] transition"
+                    type="button"
+                    aria-label={t("copyLink")}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(outputUrl);
+                        toast.success(t("copyLinkSuccess"));
+                      } catch {
+                        toast.error(t("copyLinkFailed"));
+                      }
+                    }}
+                    className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)] px-4 py-1.5 text-sm text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                   >
-                    复制链接
+                    {t("copyLink")}
                   </button>
                 </div>
               )}
@@ -496,25 +506,26 @@ export default function StudioImagePage() {
         </main>
 
         {/* Right: History (280px) */}
-        <aside className="w-72 shrink-0 border-l border-[var(--color-border)] flex flex-col overflow-y-auto">
-          <div className="sticky top-0 bg-[var(--color-bg)] px-3 py-3 border-b border-[var(--color-border)]">
-            <span className="text-xs font-semibold text-[var(--color-text-muted)]">
-              生成历史
+        <aside className="flex shrink-0 flex-col border-t border-[var(--color-hairline)] lg:w-72 lg:border-t-0 lg:border-l lg:overflow-y-auto">
+          <div className="sticky top-0 z-10 border-b border-[var(--color-hairline)] bg-[var(--color-bg)] px-3 py-3">
+            <span className="text-xs font-semibold text-[var(--color-ink-subtle)]">
+              {t("history")}
             </span>
           </div>
 
           {historyQuery.isLoading && (
-            <p className="text-xs text-[var(--color-text-muted)] p-3">加载中…</p>
+            <p className="p-3 text-xs text-[var(--color-ink-subtle)]">{t("historyLoading")}</p>
           )}
           {!historyQuery.isLoading && historyQuery.data?.items?.length === 0 && (
-            <p className="text-xs text-[var(--color-text-muted)] p-3">暂无记录</p>
+            <p className="p-3 text-xs text-[var(--color-ink-subtle)]">{t("historyEmpty")}</p>
           )}
 
           {historyQuery.data?.items?.map((item: HistoryItem) => (
             <button
               key={item.job_id}
               onClick={() => reuseHistory(item)}
-              className="w-full text-left px-3 py-2.5 border-b border-[var(--color-border)] hover:bg-[var(--color-surface)] transition group"
+              title={t("reuseHint")}
+              className="group w-full border-b border-[var(--color-hairline)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-focus)]"
             >
               <div className="flex items-start gap-2">
                 {item.thumbnail_url ? (
@@ -522,24 +533,31 @@ export default function StudioImagePage() {
                   <img
                     src={item.thumbnail_url}
                     alt=""
-                    className="w-10 h-10 rounded object-cover shrink-0"
+                    className="h-10 w-10 shrink-0 rounded object-cover"
                   />
                 ) : (
-                  <div className="w-10 h-10 rounded bg-[var(--color-surface)] border border-[var(--color-border)] shrink-0 flex items-center justify-center text-[10px] text-[var(--color-text-muted)]">
-                    {item.status === "succeeded"
-                      ? "✓"
-                      : item.status === "failed"
-                        ? "✗"
-                        : "…"}
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)]">
+                    {item.status === "succeeded" ? (
+                      <Check className="size-3.5 text-[var(--color-success)]" />
+                    ) : item.status === "failed" ? (
+                      <X className="size-3.5 text-[var(--color-danger)]" />
+                    ) : (
+                      <Loader2 className="size-3.5 animate-spin text-[var(--color-ink-tertiary)]" />
+                    )}
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs truncate text-[var(--color-text)] group-hover:text-[var(--color-accent-hover)]">
+                  <p className="truncate text-xs text-[var(--color-ink)] transition-colors group-hover:text-[var(--color-accent)]">
                     {item.prompt.slice(0, 40)}
                     {item.prompt.length > 40 ? "…" : ""}
                   </p>
-                  <p className="text-[10px] text-[var(--color-text-muted)] mt-0.5">
-                    {item.status} · {new Date(item.created_at).toLocaleTimeString("zh-CN")}
+                  <p className="mt-0.5 text-[10px] text-[var(--color-ink-tertiary)]">
+                    {item.status === "succeeded"
+                      ? t("statusSucceeded")
+                      : item.status === "failed"
+                        ? t("statusFailed")
+                        : item.status}{" "}
+                    · {new Date(item.created_at).toLocaleTimeString()}
                   </p>
                 </div>
               </div>

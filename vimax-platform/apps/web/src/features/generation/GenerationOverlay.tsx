@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import type { CanvasMutation } from "@vimax/contracts";
+import { markPromptSent } from "@/lib/prompt-dedup";
 import { useChatMessages } from "../chat/hooks/useChatMessages";
 import { Markdown } from "../chat/Markdown";
 import { Button } from "@vimax/ui";
@@ -58,16 +60,19 @@ export function GenerationOverlay({
     stopStreaming,
   } = useChatMessages({
     canvasId,
+    initialConversationId: conversationId,
     onCanvasMutation: handleCanvasMutation,
     modelId,
   });
 
-  // Auto-send the prompt when conversation is ready
+  // Auto-send the prompt when WebSocket is connected and conversation is ready
   const sentRef = useRef(false);
   useEffect(() => {
     if (sentRef.current) return;
     if (!conversationId) return;
+    if (wsStatus !== "connected") return;
     sentRef.current = true;
+    markPromptSent(canvasId, prompt);
 
     const prefix =
       mode === "idea"
@@ -76,16 +81,16 @@ export function GenerationOverlay({
           ? "【剧本模式】请根据以下剧本内容，自动完成分镜和视频生成的准备：\n\n"
           : "";
     sendMessage(prefix + prompt);
-  }, [conversationId, prompt, mode, sendMessage]);
+  }, [conversationId, prompt, mode, sendMessage, wsStatus]);
 
-  // Track completion
+  // Track completion — only mark complete when canvas has actual content
   useEffect(() => {
     if (!isStreaming && messages.length > 1 && sentRef.current) {
-      // There's at least a user message + assistant response, and streaming stopped
       const hasAssistant = messages.some((m) => m.role === "assistant");
-      if (hasAssistant) setIsComplete(true);
+      const hasNodes = mutations.some((m) => m.type === "nodes.add");
+      if (hasAssistant && hasNodes) setIsComplete(true);
     }
-  }, [isStreaming, messages]);
+  }, [isStreaming, messages, mutations]);
 
   // Track tool calls from messages metadata
   useEffect(() => {
@@ -143,9 +148,9 @@ export function GenerationOverlay({
           width: "100%",
           maxWidth: 720,
           height: "85vh",
-          backgroundColor: "var(--color-canvas, #1a1a2e)",
+          backgroundColor: "var(--color-canvas)",
           borderRadius: 16,
-          border: "1px solid var(--color-hairline, #2a2a3e)",
+          border: "1px solid var(--color-hairline)",
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
@@ -157,21 +162,18 @@ export function GenerationOverlay({
           style={{
             flexShrink: 0,
             padding: "16px 20px",
-            borderBottom: "1px solid var(--color-hairline, #2a2a3e)",
+            borderBottom: "1px solid var(--color-hairline)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 18 }}>
-              {isComplete ? "✅" : isStreaming ? "✨" : "⏳"}
-            </span>
             <span
               style={{
                 fontSize: 15,
                 fontWeight: 600,
-                color: "var(--color-ink, #e0e0e0)",
+                color: "var(--color-ink)",
               }}
             >
               {isComplete
@@ -191,10 +193,10 @@ export function GenerationOverlay({
                 fontSize: 11,
                 color:
                   wsStatus === "connected"
-                    ? "#22c55e"
+                    ? "var(--color-success)"
                     : wsStatus === "connecting"
-                      ? "#f59e0b"
-                      : "#ef4444",
+                      ? "var(--color-warning)"
+                      : "var(--color-danger)",
               }}
             >
               <div
@@ -204,10 +206,10 @@ export function GenerationOverlay({
                   borderRadius: "50%",
                   backgroundColor:
                     wsStatus === "connected"
-                      ? "#22c55e"
+                      ? "var(--color-success)"
                       : wsStatus === "connecting"
-                        ? "#f59e0b"
-                        : "#ef4444",
+                        ? "var(--color-warning)"
+                        : "var(--color-danger)",
                 }}
               />
               {wsStatus === "connected"
@@ -218,21 +220,21 @@ export function GenerationOverlay({
             </div>
             <button
               onClick={onClose}
+              aria-label="关闭"
               style={{
                 width: 28,
                 height: 28,
                 borderRadius: 6,
-                border: "1px solid var(--color-hairline, #2a2a3e)",
+                border: "1px solid var(--color-hairline)",
                 backgroundColor: "transparent",
-                color: "var(--color-ink-subtle, #888)",
-                fontSize: 14,
+                color: "var(--color-ink-subtle)",
                 cursor: "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              ✕
+              <X size={14} />
             </button>
           </div>
         </div>
@@ -256,7 +258,7 @@ export function GenerationOverlay({
               maxWidth: "85%",
               padding: "10px 16px",
               borderRadius: "14px 14px 4px 14px",
-              backgroundColor: "var(--color-accent, #6366f1)",
+              backgroundColor: "var(--color-accent)",
               color: "#fff",
               fontSize: 13,
               lineHeight: 1.6,
@@ -272,10 +274,10 @@ export function GenerationOverlay({
               style={{
                 padding: "10px 14px",
                 borderRadius: 10,
-                backgroundColor: "#6366f110",
-                border: "1px solid #6366f130",
+                backgroundColor: "var(--color-surface-2)",
+                border: "1px solid var(--color-hairline)",
                 fontSize: 12,
-                color: "#818cf8",
+                color: "var(--color-ai-reading)",
                 lineHeight: 1.5,
               }}
             >
@@ -289,7 +291,7 @@ export function GenerationOverlay({
                   fontWeight: 600,
                 }}
               >
-                🧠 思考中…
+                思考中…
               </div>
               <div style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>
                 {thinkingContent}
@@ -305,11 +307,11 @@ export function GenerationOverlay({
                 maxWidth: "90%",
                 padding: "12px 16px",
                 borderRadius: "14px 14px 14px 4px",
-                backgroundColor: "var(--color-surface-1, #24243a)",
-                border: "1px solid var(--color-hairline, #2a2a3e)",
+                backgroundColor: "var(--color-surface-1)",
+                border: "1px solid var(--color-hairline)",
                 fontSize: 13,
                 lineHeight: 1.7,
-                color: "var(--color-ink, #e0e0e0)",
+                color: "var(--color-ink)",
               }}
             >
               {streamingContent ? (
@@ -320,7 +322,7 @@ export function GenerationOverlay({
                       display: "inline-block",
                       width: 2,
                       height: 14,
-                      backgroundColor: "var(--color-accent, #6366f1)",
+                      backgroundColor: "var(--color-accent)",
                       marginLeft: 2,
                       verticalAlign: "text-bottom",
                       animation: "blink 1s infinite",
@@ -341,13 +343,13 @@ export function GenerationOverlay({
               style={{
                 padding: "10px 14px",
                 borderRadius: 10,
-                backgroundColor: "var(--color-surface-1, #24243a)",
-                border: "1px solid var(--color-hairline, #2a2a3e)",
+                backgroundColor: "var(--color-surface-1)",
+                border: "1px solid var(--color-hairline)",
                 display: "flex",
                 gap: 6,
                 alignItems: "center",
                 fontSize: 12,
-                color: "var(--color-ink-subtle, #888)",
+                color: "var(--color-ink-subtle)",
               }}
             >
               <div className="chat-typing-dots">
@@ -369,25 +371,20 @@ export function GenerationOverlay({
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 4,
-                    padding: "3px 10px",
-                    borderRadius: 20,
+                    padding: "2px 10px",
+                    borderRadius: 999,
                     fontSize: 11,
                     fontWeight: 600,
-                    color: "#fff",
-                    backgroundColor:
+                    color:
                       tc.status === "completed"
-                        ? "#22c55e"
+                        ? "var(--color-success)"
                         : tc.status === "running"
-                          ? "#f59e0b"
-                          : "#6366f1",
+                          ? "var(--color-node-running)"
+                          : "var(--color-ink-subtle)",
+                    border: `1px solid color-mix(in srgb, ${tc.status === "completed" ? "var(--color-success)" : tc.status === "running" ? "var(--color-node-running)" : "var(--color-ink-subtle)"} 45%, transparent)`,
                   }}
                 >
-                  🔧 {tc.name}{" "}
-                  {tc.status === "completed"
-                    ? "✅"
-                    : tc.status === "running"
-                      ? "⏳"
-                      : ""}
+                  {tc.name}
                 </span>
               ))}
             </div>
@@ -399,14 +396,14 @@ export function GenerationOverlay({
               style={{
                 padding: "10px 14px",
                 borderRadius: 10,
-                backgroundColor: "#22c55e10",
-                border: "1px solid #22c55e30",
+                backgroundColor: "var(--color-success-subtle)",
+                border: "1px solid color-mix(in srgb, var(--color-success) 25%, transparent)",
                 fontSize: 12,
-                color: "#4ade80",
+                color: "var(--color-success)",
                 lineHeight: 1.5,
               }}
             >
-              📦 画布节点已创建：{" "}
+              画布节点已创建：{" "}
               {createdNodeTypes
                 .map((t: string) => NODE_LABELS[t] ?? t)
                 .join("、")}
@@ -419,13 +416,13 @@ export function GenerationOverlay({
           style={{
             flexShrink: 0,
             padding: "14px 20px",
-            borderTop: "1px solid var(--color-hairline, #2a2a3e)",
+            borderTop: "1px solid var(--color-hairline)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
           }}
         >
-          <div style={{ fontSize: 11, color: "var(--color-ink-subtle, #888)" }}>
+          <div style={{ fontSize: 11, color: "var(--color-ink-subtle)" }}>
             {isStreaming
               ? "AI 正在处理中…"
               : isComplete
@@ -437,9 +434,9 @@ export function GenerationOverlay({
               <Button
                 onClick={stopStreaming}
                 size="sm"
-                variant="outline"
+                variant="secondary"
               >
-                ⏹ 停止
+                停止
               </Button>
             )}
             <Button
@@ -447,7 +444,7 @@ export function GenerationOverlay({
               disabled={!isComplete && messages.length <= 1}
               size="sm"
             >
-              🎬 进入画布
+              进入画布
             </Button>
           </div>
         </div>

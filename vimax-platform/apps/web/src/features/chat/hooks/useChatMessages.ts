@@ -19,6 +19,8 @@ import {
 
 interface UseChatMessagesOptions {
   canvasId: string;
+  /** Initial conversation ID (e.g. from GenerationOverlay) */
+  initialConversationId?: string;
   /** Called when agent sends a canvas mutation */
   onCanvasMutation?: (mutation: CanvasMutation) => void;
   /** Selected text model ID to send with each chat message */
@@ -52,10 +54,11 @@ interface UseChatMessagesReturn {
 
 export function useChatMessages({
   canvasId,
+  initialConversationId,
   onCanvasMutation,
   modelId,
 }: UseChatMessagesOptions): UseChatMessagesReturn {
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(initialConversationId ?? null);
   const [chatState, setChatState] = useState(createInitialChatStreamState);
 
   // tRPC mutations
@@ -130,19 +133,19 @@ export function useChatMessages({
           setChatState((prev) => ({
             ...prev,
             streamingContent:
-              prev.streamingContent + `\n\n馃敡 姝ｅ湪鎵ц: ${msg.tool.name}...`,
+              prev.streamingContent + `\n\n正在执行: ${msg.tool.name}...`,
           }));
           break;
         }
 
         case "chat.tool_result": {
           // Display tool result
-          const statusIcon = msg.tool.status === "completed" ? "鉁?" : "鉂?";
+          const ok = msg.tool.status === "completed";
           console.log("[chat] Tool result:", msg.tool.name, msg.tool.status);
           setChatState((prev) => ({
             ...prev,
             streamingContent:
-              prev.streamingContent + `\n${statusIcon} ${msg.tool.name}: 瀹屾垚`,
+              prev.streamingContent + `\n${msg.tool.name}: ${ok ? "完成" : "失败"}`,
           }));
           break;
         }
@@ -167,6 +170,7 @@ export function useChatMessages({
   // Send a user message
   const sendMessage = useCallback(
     (content: string) => {
+      console.log("[useChatMessages] sendMessage called", { conversationId, wsConnected: !!conversationId });
       if (!conversationId) return;
 
       setChatState((prev) => ({

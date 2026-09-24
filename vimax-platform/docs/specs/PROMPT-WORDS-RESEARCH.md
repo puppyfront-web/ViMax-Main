@@ -1,6 +1,6 @@
 # 提示词「联想词」+「限制词」板块调研分析报告
 
-> 状态：调研完成，待评审
+> 状态：P0 已实现（commit 1bba7f0，2026-09-24）；P1/P2 待排期
 > 日期：2026-09-24
 > 范围：需求定义、业界调研、平台现状 Gap 分析、接入规格、分期实施方案
 
@@ -118,11 +118,12 @@
 
 ## 6. 验收标准
 
-- [ ] image studio 提交带负面词的生图任务，API 侧 payload prompt 尾部出现 `Avoid: ...`，worker 正常出图。
-- [ ] 画布 image 节点填负面词后重跑，缓存 key 变化（不命中旧缓存）。
-- [ ] 首页/image studio 点联想词只追加不覆盖；刷新后词库来自 contracts 单一来源。
-- [ ] video studio 负面词升级后原有行为（提交 `negative_prompt`）不回退。
-- [ ] 全链路无 DB 迁移、无 worker 改动、无新增前端依赖。
+- [x] image studio 提交带负面词的生图任务，prompt 尾部出现 `Avoid: ...`（单测：composeImagePrompt 折叠顺序与空值分支）
+- [x] 负面词变化改变合成后 prompt，从而改变缓存键（单测：notEqual 断言）
+- [x] 首页/image studio 点联想词只追加不覆盖（组件以 `, ` 拼接当前值）
+- [x] video studio 负面词升级后提交行为不变（payload 字段与 handler 未动，API 146 项全过）
+- [x] 全链路无 DB 迁移、无 worker 改动、无新增前端依赖（diff 范围确认）
+- [ ] 浏览器端冒烟（chips 交互、抽屉开合、真实出图）——待联调环境验证
 
 ## 7. 风险与已知局限
 

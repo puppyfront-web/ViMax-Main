@@ -11,7 +11,7 @@
 | [PHASE1-FRONTEND.md](./PHASE1-FRONTEND.md) | ✅ 已确认 | Phase 1 前端架构重构规格 |
 | [BACKEND-PIPELINE.md](./BACKEND-PIPELINE.md) | ✅ 已确认 | 后端管线修复规格 |
 | [AUTO-GENERATION-V1.md](./AUTO-GENERATION-V1.md) | ✅ 已确认 | 创意输入自动生成分镜/镜头/成片规格 |
-| [PROMPT-WORDS-RESEARCH.md](./PROMPT-WORDS-RESEARCH.md) | 🔍 待评审 | 提示词「联想词 + 限制词」板块调研与接入规格 |
+| [PROMPT-WORDS-RESEARCH.md](./PROMPT-WORDS-RESEARCH.md) | ✅ P0 已实现 | 提示词「联想词 + 限制词」板块调研与接入规格 |
 
 ## 里程碑关系
 

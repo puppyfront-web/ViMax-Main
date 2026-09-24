@@ -121,7 +121,7 @@ export default function HomePage() {
   const utils = trpc.useUtils();
 
   const config = MODES[mode];
-  const projects = listCanvases.data?.items.slice(0,4) ?? [];
+  const projects = listCanvases.data?.items ?? [];
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -205,29 +205,46 @@ export default function HomePage() {
     return () => ctx.revert();
   }, []);
 
-  // ── Reveal: project rows fade up as they enter the viewport ──
+  // ── Reveal: rows fade up as they enter the viewport ──
+  // Geometry-driven on the AppShell <main> scroll container: scroll events
+  // dispatch synchronously (unlike IntersectionObserver/ScrollTrigger
+  // callbacks, which stall while the page is occluded), so reveals are
+  // deterministic in every window state.
   useIsoLayoutEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+    const rows = Array.from(root.querySelectorAll<HTMLElement>("[data-reveal]"));
+    if (rows.length === 0) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-    const ctx = gsap.context(() => {
-      const rows = root.querySelectorAll<HTMLElement>("[data-reveal]");
-      rows.forEach((row) => {
-        gsap.fromTo(
-          row,
-          { opacity: 0, y: 18 },
-          {
-            opacity: 1,
-            y: 0,
-            duration: 0.55,
-            ease: "power2.out",
-            scrollTrigger: { trigger: row, start: "top 92%", once: true },
-          },
-        );
-      });
-    }, root);
-    return () => ctx.revert();
+    const scroller = root.closest("main");
+    const pending = rows.filter((row) => row.dataset.revealed !== "1");
+
+    const reveal = () => {
+      const threshold = window.innerHeight * 0.92;
+      for (const row of pending) {
+        if (row.dataset.revealed === "1") continue;
+        if (row.getBoundingClientRect().top > threshold) continue;
+        row.dataset.revealed = "1";
+        row.style.transition = "opacity 0.55s cubic-bezier(0.16,1,0.3,1), transform 0.55s cubic-bezier(0.16,1,0.3,1)";
+        row.style.opacity = "1";
+        row.style.transform = "translateY(0)";
+      }
+    };
+
+    rows.forEach((row) => {
+      if (row.dataset.revealed === "1") return;
+      row.style.opacity = "0";
+      row.style.transform = "translateY(18px)";
+    });
+
+    scroller?.addEventListener("scroll", reveal, { passive: true });
+    window.addEventListener("resize", reveal);
+    reveal();
+    return () => {
+      scroller?.removeEventListener("scroll", reveal);
+      window.removeEventListener("resize", reveal);
+    };
   }, [projects.length, listCanvases.isLoading, templates.data]);
 
   // ── Hover lift: feature cards and project rows ease up under the cursor ──

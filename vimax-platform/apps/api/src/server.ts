@@ -13,6 +13,7 @@ import { createWebSocketServer, handleUpgrade } from "./realtime/websocket.js";
 import { initVendorRegistry } from "./domain/vendor/vendor-registry.js";
 import { initSkillRegistry } from "./domain/skill/skill-registry.js";
 import { seedModels } from "./domain/model/model.service.js";
+import { sweepGeneratedAssets } from "./domain/asset/asset-offload.js";
 import { appRouter } from "./trpc/router.js";
 import { createContext } from "./trpc/trpc.js";
 
@@ -78,6 +79,26 @@ async function bootstrap() {
 
   // Initialize skill system
   initSkillRegistry();
+
+  // ── 本地化存储 TTL 清扫 ──────────────────────────────────────
+  // 未被客户端认领的 generated 资产二进制超过 TTL 后删除（元数据行保留）。
+  // 每 6 小时跑一轮；ASSET_SWEEP_TTL_HOURS=0 可关闭。
+  const sweepTtlHours = config.assetSweepTtlHours();
+  if (sweepTtlHours > 0) {
+    const runSweep = async () => {
+      try {
+        const { swept } = await sweepGeneratedAssets(sweepTtlHours);
+        if (swept > 0) console.log(`[asset-sweep] offloaded ${swept} stale generated assets`);
+      } catch (err) {
+        console.warn("[asset-sweep] failed:", (err as Error).message);
+      }
+    };
+    const sweepTimer = setInterval(() => void runSweep(), 6 * 3600 * 1000);
+    sweepTimer.unref();
+    // 启动后延迟 2 分钟跑首轮，避开启动高峰
+    const firstRun = setTimeout(() => void runSweep(), 2 * 60 * 1000);
+    firstRun.unref();
+  }
 
   // Start Hono HTTP server — serve() returns the underlying http.Server
   const httpServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {

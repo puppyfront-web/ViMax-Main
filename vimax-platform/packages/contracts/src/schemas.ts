@@ -81,8 +81,16 @@ export const VideoGenerateOutputSchema = z.object({
 export type VideoGenerateOutput = z.infer<typeof VideoGenerateOutputSchema>;
 
 export const AssetUploadRequestSchema = z.object({
-  mime_type: z.enum(["image/png", "image/jpeg", "image/webp"]),
-  size_bytes: z.number().int().positive().max(20 * 1024 * 1024),
+  mime_type: z.enum([
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "video/mp4",
+    "video/webm",
+    "audio/m4a",
+  ]),
+  // 视频手动上云需要更大的单文件额度
+  size_bytes: z.number().int().positive().max(512 * 1024 * 1024),
 });
 
 export type AssetUploadRequest = z.infer<typeof AssetUploadRequestSchema>;
@@ -99,8 +107,9 @@ export type AssetUploadResponse = z.infer<typeof AssetUploadResponseSchema>;
 export const AssetConfirmUploadSchema = z.object({
   asset_id: z.string().uuid(),
   sha256: z.string().length(64),
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
+  // 音频无宽高；未知尺寸（浏览器端直传）传 0
+  width: z.number().int().min(0),
+  height: z.number().int().min(0),
 });
 
 export type AssetConfirmUpload = z.infer<typeof AssetConfirmUploadSchema>;

@@ -11,6 +11,7 @@ import {
   getAssetDownloadUrl,
   requestAssetUpload,
 } from "../../domain/asset/asset.service.js";
+import { offloadAsset } from "../../domain/asset/asset-offload.js";
 import { generateImage, getImageJob } from "../../domain/image/generate.service.js";
 import { getJobWithOutputUrl } from "../../domain/job/job-event.service.js";
 import { getDb } from "../../infrastructure/db/client.js";
@@ -22,6 +23,7 @@ function mapError(err: unknown): never {
   const message = err instanceof Error ? err.message : "internal";
   const codeMap: Record<string, TRPCError["code"]> = {
     "input.asset_not_found": "NOT_FOUND",
+    "input.asset_offloaded_local": "NOT_FOUND",
     "input.unsupported_model": "BAD_REQUEST",
     "provider.invalid_key": "PRECONDITION_FAILED",
   };
@@ -156,6 +158,17 @@ export const assetRouter = router({
     }
   }),
 
+  // ── 本地化存储：客户端确认已写入本地后清除远端二进制 ──────────
+  offload: protectedProcedure
+    .input(z.object({ asset_id: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      try {
+        return await offloadAsset(input.asset_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
   getDownloadUrl: protectedProcedure
     .input(z.object({ asset_id: z.string().uuid() }))
     .query(async ({ input }) => {
@@ -207,11 +220,14 @@ export const assetRouter = router({
 
       const items = await Promise.all(
         page.map(async (asset) => {
+          // 已本地化的资产不再签发远端下载地址
           let downloadUrl: string | undefined;
-          try {
-            downloadUrl = await createPresignedDownloadUrl(asset.storageKey, 300);
-          } catch {
-            // Skip if presigned URL fails
+          if (!asset.offloadedAt) {
+            try {
+              downloadUrl = await createPresignedDownloadUrl(asset.storageKey, 300);
+            } catch {
+              // Skip if presigned URL fails
+            }
           }
           return {
             asset_id: asset.id,
@@ -221,6 +237,7 @@ export const assetRouter = router({
             height: asset.height,
             size_bytes: asset.sizeBytes,
             source: asset.source,
+            offloaded_at: asset.offloadedAt ? asset.offloadedAt.toISOString() : null,
             download_url: downloadUrl,
             created_at: asset.createdAt.toISOString(),
           };

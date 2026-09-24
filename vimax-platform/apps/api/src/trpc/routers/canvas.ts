@@ -325,13 +325,19 @@ export const canvasRouter = router({
     .query(async ({ input }) => {
       const db = getDb();
       const [asset] = await db
-        .select({ storageKey: assets.storageKey })
+        .select({
+          storageKey: assets.storageKey,
+          source: assets.source,
+          offloadedAt: assets.offloadedAt,
+        })
         .from(assets)
         .where(eq(assets.id, input.asset_id))
         .limit(1);
-      if (!asset) return { url: null };
+      if (!asset) return { url: null, source: null, offloaded: false };
+      // 二进制已被客户端认领（本地化策略）——不再签发远端 URL
+      if (asset.offloadedAt) return { url: null, source: asset.source, offloaded: true };
       const url = await createPresignedDownloadUrl(asset.storageKey);
-      return { url };
+      return { url, source: asset.source, offloaded: false };
     }),
 
   // ── Character three-view (三视图) ───────────────────────────────

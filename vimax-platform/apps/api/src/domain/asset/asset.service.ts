@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import type { AssetConfirmUpload, AssetUploadRequest } from "@vimax/contracts";
 import { getDb } from "../../infrastructure/db/client.js";
 import { assets } from "../../infrastructure/db/schema.js";
+import { inferAssetKind } from "./asset-utils.js";
 import {
   buildStorageKey,
   createPresignedDownloadUrl,
@@ -20,7 +21,7 @@ export async function requestAssetUpload(input: AssetUploadRequest) {
   const db = getDb();
   await db.insert(assets).values({
     id: assetId,
-    kind: "image",
+    kind: inferAssetKind(input.mime_type),
     mimeType: input.mime_type,
     storageKey,
     sizeBytes: input.size_bytes,
@@ -66,6 +67,9 @@ export async function getAssetDownloadUrl(assetId: string) {
   const [asset] = await db.select().from(assets).where(eq(assets.id, assetId)).limit(1);
   if (!asset) {
     throw new Error("input.asset_not_found");
+  }
+  if (asset.offloadedAt) {
+    throw new Error("input.asset_offloaded_local");
   }
 
   const url = await createPresignedDownloadUrl(asset.storageKey);

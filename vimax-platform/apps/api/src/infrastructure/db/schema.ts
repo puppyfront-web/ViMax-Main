@@ -44,10 +44,15 @@ export const assets = pgTable(
     sha256: text("sha256").notNull(),
     source: assetSourceEnum("source").notNull().default("upload"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // 本地化存储策略：时间戳非空 = 二进制已从对象存储删除、仅存用户设备。
+    // 元数据行保留以维持节点引用；generated 资产在客户端确认落库后置位，
+    // upload（用户手动上云）资产永不置位。
+    offloadedAt: timestamp("offloaded_at", { withTimezone: true }),
   },
   (table) => ({
     sha256Idx: index("assets_sha256_idx").on(table.sha256),
     storageKeyIdx: index("assets_storage_key_idx").on(table.storageKey),
+    offloadedIdx: index("assets_offloaded_idx").on(table.offloadedAt),
   }),
 );
 

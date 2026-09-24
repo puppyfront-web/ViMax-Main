@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -55,6 +56,16 @@ export async function createPresignedDownloadUrl(
 export async function headObject(storageKey: string) {
   return getS3Client().send(
     new HeadObjectCommand({
+      Bucket: getBucket(),
+      Key: storageKey,
+    }),
+  );
+}
+
+/** Remove an object from the bucket. Missing objects are treated as deleted. */
+export async function deleteObject(storageKey: string): Promise<void> {
+  await getS3Client().send(
+    new DeleteObjectCommand({
       Bucket: getBucket(),
       Key: storageKey,
     }),

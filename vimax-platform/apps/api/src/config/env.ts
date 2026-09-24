@@ -24,4 +24,7 @@ export const config = {
   arkApiKey: () => getEnvOptional("ARK_API_KEY", ""),
   apiPort: () => Number(getEnvOptional("API_PORT", "3001")),
   apiHost: () => getEnvOptional("API_HOST", "0.0.0.0"),
+  // 本地化存储策略：未认领 generated 资产的远端二进制保留时长（小时），
+  // 0 = 关闭清扫。默认 24h：给客户端足够的认领窗口。
+  assetSweepTtlHours: () => Number(getEnvOptional("ASSET_SWEEP_TTL_HOURS", "24")),
 };

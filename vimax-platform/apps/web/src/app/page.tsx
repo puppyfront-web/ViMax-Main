@@ -13,6 +13,7 @@ import { ModelSelect } from "@/features/models/ModelSelect";
 import { StarfieldBackground } from "@/features/home/StarfieldBackground";
 import { CinematicBackdrop } from "@/features/home/CinematicBackdrop";
 import { useAuth } from "@/features/auth/AuthProvider";
+import { ThesaurusChips } from "@/features/prompt-words/PromptWordChips";
 import {
   Sparkles,
   Film,
@@ -459,6 +460,10 @@ export default function HomePage() {
               <div className="absolute top-0 left-4 right-4 h-px opacity-0 group-hover:opacity-40 transition-opacity duration-500" style={{ background: "var(--gradient-brand)" }} />
               <div className="p-5">
                 <Textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") handleCreate(); }} placeholder={config.placeholder} rows={mode === "idea" ? 3 : 8} className="min-h-[80px] border-0 bg-transparent resize-none focus-visible:ring-0 p-0 text-sm leading-relaxed placeholder:text-[var(--color-ink-tertiary)]" style={mode === "script" ? { minHeight: 180 } : undefined} />
+                {/* 联想词：维度词条点击追加进输入（不覆盖已输入内容） */}
+                <div className="mt-3">
+                  <ThesaurusChips onAppend={(fragment) => setInput((v) => [v.trim(), fragment].filter(Boolean).join(", "))} />
+                </div>
                 <div className="flex items-center justify-between mt-5 pt-4 border-t border-[var(--color-hairline)]">
                   <div className="flex items-center gap-2">
                     <kbd className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-md bg-[var(--color-surface-2)] text-[10px] font-mono text-[var(--color-ink-subtle)] border border-[var(--color-hairline)]">Ctrl + ↵</kbd>

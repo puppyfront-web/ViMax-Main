@@ -102,6 +102,8 @@ export interface ShotNodeData {
   variationType: "large" | "medium" | "small";
   ffVisCharIdxs: number[];
   lfVisCharIdxs: number[];
+  /** 折叠为首帧 prompt 的 "Avoid: ..." 从句（见 runShotNode）。 */
+  negativePrompt?: string;
   /** IDs of character nodes whose portraits (front view) are fed as
    * references when generating this shot's first frame — drives cross-shot
    * character consistency (mirrors idea2video's ff_vis_char_idxs). */
@@ -236,15 +238,24 @@ export function getScenePreset(id: string | undefined): ScenePreset | undefined 
 
 /**
  * The prompt actually sent to the model: the user prompt plus the kind's
- * style fragment and the scene preset fragment (if any). Used for both
- * generation and the cache key so different kind/scene combinations never
- * collapse onto one cached result.
+ * style fragment and the scene preset fragment (if any), with the negative
+ * words folded in as a trailing "Avoid: ..." clause (mirrors
+ * composeVideoPrompt — provider APIs take negatives as prompt text).
+ * Used for both generation and the cache key so different kind/scene/negative
+ * combinations never collapse onto one cached result.
  */
-export function composeImagePrompt(prompt: string, sceneId?: string, kind?: string): string {
+export function composeImagePrompt(
+  prompt: string,
+  sceneId?: string,
+  kind?: string,
+  negativePrompt?: string,
+): string {
   const base = prompt.trim();
   const kindPreset = getImageKindPreset(kind);
   const scene = getScenePreset(sceneId);
-  return [base, kindPreset?.prompt, scene?.prompt].filter(Boolean).join(", ");
+  const parts = [base, kindPreset?.prompt, scene?.prompt];
+  if (negativePrompt?.trim()) parts.push(`Avoid: ${negativePrompt.trim()}`);
+  return parts.filter(Boolean).join(", ");
 }
 
 export interface VideoNodeData {

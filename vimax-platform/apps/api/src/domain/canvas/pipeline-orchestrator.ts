@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import type { PipelineStage } from "@vimax/contracts";
+import { DEFAULT_NEGATIVE_PROMPT } from "@vimax/contracts";
 import { getDb } from "../../infrastructure/db/client.js";
 import { canvasEdges, canvasNodes, jobs } from "../../infrastructure/db/schema.js";
 import { broadcastToRoom } from "../../realtime/connection-manager.js";
@@ -147,6 +148,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
           position: { x: pos.x + 300, y: pos.y },
           data: {
             prompt: data.ffDesc ?? "cinematic frame",
+            negativePrompt: DEFAULT_NEGATIVE_PROMPT,
             modelId: imageModelId ?? "doubao-seedream-4-0",
             size: "1024x1024",
             status: "idle",
@@ -188,6 +190,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
             motionPreset: "zoom_in",
             durationSec: 4,
             modelId: videoModelId ?? "doubao-seedance-1-0-lite",
+            negativePrompt: DEFAULT_NEGATIVE_PROMPT,
             status: "idle",
           },
           status: "idle",
@@ -232,6 +235,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
             motionPreset: "zoom_in",
             durationSec: 4,
             modelId: videoModelId ?? "doubao-seedance-1-0-lite",
+            negativePrompt: DEFAULT_NEGATIVE_PROMPT,
             status: "idle",
           },
           status: "idle",

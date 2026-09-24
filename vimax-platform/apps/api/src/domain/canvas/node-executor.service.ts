@@ -323,7 +323,7 @@ export async function runVariants(
   const model = await resolveImageModel(data.modelId);
   if (!model) throw new Error("input.unsupported_model");
 
-  const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind);
+  const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
 
   const upstreamAssetIds = await collectUpstreamAssetIds(canvasId, nodeId);
   const refAssetIds = [...upstreamAssetIds, ...(data.referenceAssetIds ?? [])];
@@ -609,7 +609,7 @@ async function runImageNode(
   const modelId = data.modelId ?? model.id;
 
   // E-commerce/creative kind preset augments the prompt (and the cache key).
-  const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind);
+  const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
 
   // Merge upstream assets with any direct reference assets
   const refAssetIds = [
@@ -896,6 +896,7 @@ async function runShotNode(
     focusStr,
     promptSuffix,
     "professional cinematography, film grade, 4K, sharp focus",
+    data.negativePrompt?.trim() ? `Avoid: ${data.negativePrompt.trim()}` : "",
   ]
     .filter(Boolean)
     .join(" ");

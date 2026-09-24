@@ -5,6 +5,7 @@ import { Check, Loader2, X } from "lucide-react";
 import type { ImageSize } from "@vimax/contracts";
 import { trpc } from "@/lib/trpc/client";
 import { SegmentedControl } from "@vimax/ui";
+import { NegativePromptChips, ThesaurusChips } from "@/features/prompt-words/PromptWordChips";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 
@@ -202,6 +203,8 @@ export default function StudioImagePage() {
   const t = useTranslations("studio");
   const [mode, setMode] = useState<"t2i" | "i2i">("t2i");
   const [prompt, setPrompt] = useState("");
+  const [negativePrompt, setNegativePrompt] = useState("");
+  const [negativeOpen, setNegativeOpen] = useState(false);
   const [modelId, setModelId] = useState("doubao-seedream-4-0");
   const [size, setSize] = useState<ImageSize>("1024x1024");
   const [refAssetIds, setRefAssetIds] = useState<string[]>([]);
@@ -298,6 +301,7 @@ export default function StudioImagePage() {
         prompt: prompt.trim(),
         model_id: modelId,
         size: size as ImageSize,
+        negative_prompt: negativePrompt.trim() || undefined,
         reference_asset_ids: mode === "i2i" ? refAssetIds : undefined,
         force: false,
       });
@@ -370,6 +374,45 @@ export default function StudioImagePage() {
               rows={4}
               className="w-full resize-none rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)] px-3 py-2 text-sm text-[var(--color-ink)] placeholder-[var(--color-ink-tertiary)] transition-colors focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-focus)]"
             />
+          </div>
+
+          {/* 联想词：维度 tab + 词条 chips，点击追加到提示词 */}
+          <div>
+            <span className="mb-1.5 block text-xs text-[var(--color-ink-subtle)]">
+              {t("associationLabel")}
+            </span>
+            <ThesaurusChips
+              onAppend={(fragment) =>
+                setPrompt((p) => [p.trim(), fragment].filter(Boolean).join(", "))
+              }
+            />
+          </div>
+
+          {/* 限制词：预设 chips + 自由输入，折叠收纳 */}
+          <div className="rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-1)] p-2">
+            <button
+              type="button"
+              onClick={() => setNegativeOpen((v) => !v)}
+              className="flex w-full items-center justify-between"
+            >
+              <span className="text-xs text-[var(--color-ink-subtle)]">
+                {t("negativeLabel")}
+              </span>
+              <span className="font-mono text-[10px] text-[var(--color-ink-tertiary)]">
+                {negativeOpen ? "−" : "+"}
+              </span>
+            </button>
+            {negativeOpen && (
+              <div className="mt-2 flex flex-col gap-2">
+                <NegativePromptChips value={negativePrompt} onChange={setNegativePrompt} />
+                <input
+                  value={negativePrompt}
+                  onChange={(e) => setNegativePrompt(e.target.value)}
+                  placeholder={t("negativePlaceholder")}
+                  className="w-full rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)] px-2.5 py-1.5 text-xs text-[var(--color-ink-subtle)] placeholder-[var(--color-ink-tertiary)] focus:border-[var(--color-accent)] focus:text-[var(--color-ink)] focus:outline-none"
+                />
+              </div>
+            )}
           </div>
 
           <div>

@@ -35,12 +35,14 @@ export function getDefaultNodeData(
         variationType: "medium",
         ffVisCharIdxs: [],
         lfVisCharIdxs: [],
+        negativePrompt: "",
         status: "idle",
       };
     case "image": {
       const preset = getImageKindPreset(kind);
       return {
         prompt: "",
+        negativePrompt: "",
         modelId: imageModelId,
         size: preset?.size ?? "1024x1024",
         kind: preset?.kind,
@@ -52,6 +54,7 @@ export function getDefaultNodeData(
         motionPreset: "zoom_in",
         durationSec: 4,
         modelId: videoModelId,
+        negativePrompt: "",
         status: "idle",
       };
     case "concat":

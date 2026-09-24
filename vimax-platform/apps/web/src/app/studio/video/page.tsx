@@ -32,6 +32,7 @@ import {
   VIDEO_MOTION_PRESETS,
   VIDEO_STYLE_PRESETS,
 } from "@vimax/contracts";
+import { NegativePromptChips } from "@/features/prompt-words/PromptWordChips";
 import { trpc } from "@/lib/trpc/client";
 import { useTranslations } from "next-intl";
 
@@ -521,12 +522,19 @@ export default function StudioVideoPage() {
                 </span>
               </button>
               {negativeOpen && (
-                <input
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                  placeholder={t("negativePlaceholder")}
-                  className="mt-2 w-full rounded bg-[var(--color-surface-4)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] placeholder-[var(--color-ink-subtle)] focus:text-[var(--color-ink)] focus:outline-none"
-                />
+                <div className="mt-2 flex flex-col gap-2">
+                  <NegativePromptChips
+                    value={negativePrompt}
+                    onChange={setNegativePrompt}
+                    includeVideoGroup
+                  />
+                  <input
+                    value={negativePrompt}
+                    onChange={(e) => setNegativePrompt(e.target.value)}
+                    placeholder={t("negativePlaceholder")}
+                    className="w-full rounded bg-[var(--color-surface-4)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] placeholder-[var(--color-ink-subtle)] focus:text-[var(--color-ink)] focus:outline-none"
+                  />
+                </div>
               )}
             </div>
           </Panel>

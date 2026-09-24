@@ -2,6 +2,7 @@ export * from "./job-types.js";
 export * from "./schemas.js";
 export * from "./canvas-types.js";
 export * from "./canvas-schemas.js";
+export * from "./prompt-words.js";
 export * from "./chat-types.js";
 export * from "./chat-schemas.js";
 export * from "./workbench-types.js";

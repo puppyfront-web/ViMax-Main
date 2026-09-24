@@ -407,8 +407,8 @@ async function handleChatSend(
             "- 若已有剧本但无角色 → 调用 extract_characters\n" +
             "- 若已有剧本但无分镜 → 调用 generate_storyboard（拆分镜头，含景别与运镜）\n" +
             "- 若分镜已有但无镜头节点 → 调用 create_canvas_nodes 创建 shot 节点（data 用对象，如 {\"ffDesc\": \"画面描述\"}）\n" +
-            "- 若镜头已有但无图片节点 → create_canvas_nodes 创建 image 节点（data: {\"prompt\": \"画面描述\", \"size\": \"1024x1024\"}），然后对每个 image 节点调用 run_node 生成图片\n" +
-            "- 若图片已有但无视频节点 → create_canvas_nodes 创建 video 节点（data: {\"motionPreset\": \"zoom_in\", \"durationSec\": 4}），然后对每个 video 节点调用 run_node 生成视频\n" +
+            "- 若镜头已有但无图片节点 → create_canvas_nodes 创建 image 节点（data: {\"prompt\": \"画面描述\", \"size\": \"1024x1024\", \"negativePrompt\": \"low quality, watermark\"}，negativePrompt 为不希望出现的元素），然后对每个 image 节点调用 run_node 生成图片\n" +
+            "- 若图片已有但无视频节点 → create_canvas_nodes 创建 video 节点（data: {\"motionPreset\": \"zoom_in\", \"durationSec\": 4, \"negativePrompt\": \"low quality, watermark\"}），然后对每个 video 节点调用 run_node 生成视频\n" +
             "- 若剧本、角色、分镜、镜头、图片、视频都已齐备 → 只回复「完成」并不再调用任何工具。";
 
         const result = await runDecisionAgent(canvasId, turnPrompt, onChunk, modelId, abortController.signal);

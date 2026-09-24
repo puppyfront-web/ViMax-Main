@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ImageGenerateInput, ImageGenerateOutput, ImageJobPayload } from "@vimax/contracts";
-import { getImageModel } from "@vimax/contracts";
+import { composeImagePrompt, getImageModel } from "@vimax/contracts";
 import { eq } from "drizzle-orm";
 import { config } from "../../config/env.js";
 import {
@@ -25,9 +25,17 @@ export async function generateImage(input: ImageGenerateInput): Promise<ImageGen
   }
 
   const { assets: refAssets, sha256s } = await collectReferenceSha256s(input.reference_asset_ids);
+  // 负面词折叠进发送给模型的 prompt（云 API 无独立参数）；缓存键随合成
+  // 后的 prompt 变化，快照保留原始字段供历史展示。
+  const effectivePrompt = composeImagePrompt(
+    input.prompt,
+    undefined,
+    undefined,
+    input.negative_prompt,
+  );
   const cacheKey = buildImageCacheKey({
     mode: input.mode,
-    prompt: input.prompt,
+    prompt: effectivePrompt,
     model_id: input.model_id,
     size: input.size,
     reference_sha256s: sha256s,
@@ -61,6 +69,7 @@ export async function generateImage(input: ImageGenerateInput): Promise<ImageGen
   const inputSnapshot = {
     mode: input.mode,
     prompt: input.prompt,
+    negative_prompt: input.negative_prompt ?? "",
     model_id: input.model_id,
     size: input.size,
     reference_asset_ids: input.reference_asset_ids ?? [],
@@ -78,7 +87,7 @@ export async function generateImage(input: ImageGenerateInput): Promise<ImageGen
       model: model.init_args?.model,
     },
     input: {
-      prompt: input.prompt,
+      prompt: effectivePrompt,
       size: input.size,
       reference_storage_keys: refAssets.map((a) => a.storageKey),
     },

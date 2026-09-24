@@ -7,6 +7,9 @@ export const ImageGenerateInputSchema = z
     prompt: z.string().min(1).max(4000),
     model_id: z.string().min(1),
     size: z.enum(IMAGE_SIZES),
+    // 无独立负面词参数的云 API —— API 侧折叠为 "Avoid: ..." 文本（见
+    // composeImagePrompt），payload/worker 不感知该字段。
+    negative_prompt: z.string().max(1000).optional(),
     reference_asset_ids: z.array(z.string().uuid()).max(4).optional(),
     force: z.boolean().default(false),
   })

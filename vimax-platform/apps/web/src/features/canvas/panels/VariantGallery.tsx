@@ -3,14 +3,12 @@
 import { toast } from "sonner";
 import { Check } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
+import { useAssetSource } from "@/features/assets/useAssetSource";
 
 // ── Variant thumbnail ──────────────────────────────────────────────
 
 function VariantThumb({ assetId, isCurrent }: { assetId: string; isCurrent: boolean }) {
-  const { data, isLoading } = trpc.canvas.getAssetUrl.useQuery(
-    { asset_id: assetId },
-    { staleTime: 300_000 },
-  );
+  const { status, url } = useAssetSource(assetId);
   return (
     <div
       style={{
@@ -23,11 +21,11 @@ function VariantThumb({ assetId, isCurrent }: { assetId: string; isCurrent: bool
         backgroundColor: "var(--color-bg)",
       }}
     >
-      {isLoading ? (
+      {status === "loading" ? (
         <div style={{ fontSize: 9, color: "var(--color-text-dim)", padding: 4 }}>…</div>
-      ) : data?.url ? (
+      ) : url ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={data.url} alt="variant" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <img src={url} alt="variant" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       ) : (
         <div style={{ fontSize: 9, color: "var(--color-text-dim)", padding: 4 }}>无预览</div>
       )}

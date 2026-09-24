@@ -529,11 +529,15 @@ export default function StudioImagePage() {
             >
               <div className="flex items-start gap-2">
                 {item.thumbnail_url ? (
+                  // 缩略图签名 URL 在资产被本地化 offload 后失效——隐藏破图
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={item.thumbnail_url}
                     alt=""
                     className="h-10 w-10 shrink-0 rounded object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.visibility = "hidden";
+                    }}
                   />
                 ) : (
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-[var(--color-hairline-strong)] bg-[var(--color-surface-1)]">

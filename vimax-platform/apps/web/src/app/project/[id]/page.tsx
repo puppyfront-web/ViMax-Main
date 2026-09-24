@@ -12,10 +12,12 @@ import { trpc } from "@/lib/trpc/client";
 import { SkeletonList, cn } from "@vimax/ui";
 import { toast } from "sonner";
 import { AlertTriangle, Download, Film, Loader2, PencilRuler, RotateCcw } from "lucide-react";
+import { useAssetSource } from "@/features/assets/useAssetSource";
+import { downloadLocalAsset } from "@/lib/local-assets";
 
 function AssetVideo({ assetId, className }: { assetId: string; className?: string }) {
-  const { data } = trpc.canvas.getAssetUrl.useQuery({ asset_id: assetId }, { staleTime: 10 * 60_000 });
-  if (!data?.url) {
+  const { status, url } = useAssetSource(assetId);
+  if (status !== "local" && status !== "cloud") {
     return (
       <div className={cn("flex items-center justify-center bg-[var(--color-surface-2)]", className)}>
         <Loader2 className="size-5 animate-spin text-[var(--color-ink-tertiary)]" />
@@ -23,15 +25,29 @@ function AssetVideo({ assetId, className }: { assetId: string; className?: strin
     );
   }
   // eslint-disable-next-line jsx-a11y/media-has-caption
-  return <video src={data.url} controls className={cn("w-full bg-black", className)} />;
+  return <video src={url!} controls className={cn("w-full bg-black", className)} />;
 }
 
 function AssetDownload({ assetId }: { assetId: string }) {
-  const { data } = trpc.canvas.getAssetUrl.useQuery({ asset_id: assetId }, { staleTime: 10 * 60_000 });
-  if (!data?.url) return null;
+  const { status, url } = useAssetSource(assetId);
+  if (status === "loading") return null;
+  // 本地金库直下；无本地副本时回退远端链接
+  if (status === "local") {
+    return (
+      <button
+        type="button"
+        onClick={() => void downloadLocalAsset(assetId, `vimax-${assetId.slice(0, 8)}.mp4`)}
+        className="inline-flex items-center gap-1 rounded-md border border-[var(--color-hairline)] px-2 py-1 text-[11px] text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+      >
+        <Download className="size-3" />
+        下载
+      </button>
+    );
+  }
+  if (!url) return null;
   return (
     <a
-      href={data.url}
+      href={url}
       target="_blank"
       rel="noreferrer"
       className="inline-flex items-center gap-1 rounded-md border border-[var(--color-hairline)] px-2 py-1 text-[11px] text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"

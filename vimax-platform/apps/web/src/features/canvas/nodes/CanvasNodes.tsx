@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { CanvasNodeType, VariantEntry } from "@vimax/contracts";
-import { Download, Check, ImagePlus, Play, Plus, UserRound, TriangleAlert, RotateCcw } from "lucide-react";
+import { Download, Check, CloudUpload, ImagePlus, Loader2, Play, Plus, UserRound, TriangleAlert, RotateCcw } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
+import { downloadLocalAsset, getLocalAssetBlob } from "@/lib/local-assets";
 import { AssetPreview } from "../components/AssetPreview";
 import { InlineEditText } from "./InlineEditText";
 import { useCanvas } from "../canvas-context";
@@ -320,7 +321,7 @@ const ACTION_BUTTON_STYLE: React.CSSProperties = {
   boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
 };
 
-/** Hover bubble actions: run, download output, spawn a downstream i2i image node. */
+/** Hover bubble actions: run, download output, save to cloud, spawn a downstream i2i image node. */
 export function NodeQuickActions({
   nodeId,
   nodeType,
@@ -330,12 +331,15 @@ export function NodeQuickActions({
   nodeType: string;
   outputAssetId?: string;
 }) {
-  const { runNode, addDownstreamImageNode } = useCanvas();
+  const { runNode, addDownstreamImageNode, handleUpdateNodeData } = useCanvas();
   const [downloadId, setDownloadId] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const { data: downloadUrl } = trpc.canvas.getAssetUrl.useQuery(
     { asset_id: downloadId! },
     { enabled: downloadId !== null, staleTime: 60_000 },
   );
+  const requestUpload = trpc.asset.requestUpload.useMutation();
+  const confirmUpload = trpc.asset.confirmUpload.useMutation();
 
   useEffect(() => {
     if (downloadUrl?.url) {
@@ -343,6 +347,46 @@ export function NodeQuickActions({
       setDownloadId(null);
     }
   }, [downloadUrl]);
+
+  // 下载优先走本地金库（无网络开销）；本地无副本再回退远端签名 URL
+  const handleDownload = async (assetId: string) => {
+    const ext = nodeType === "video" ? "mp4" : nodeType === "audio" ? "m4a" : "png";
+    const saved = await downloadLocalAsset(assetId, `vimax-${nodeType}-${assetId.slice(0, 8)}.${ext}`);
+    if (!saved) setDownloadId(assetId);
+  };
+
+  // 手动上云：把本地副本经既有上传通道存为受保护资产（source=upload，
+  // 永不被自动清除），并把节点重绑到新资产
+  const handleUploadToCloud = async (assetId: string) => {
+    const blob = await getLocalAssetBlob(assetId);
+    if (!blob) {
+      setDownloadId(assetId); // 本机无副本：退化为打开远端（如有）
+      return;
+    }
+    setUploading(true);
+    try {
+      const mime = blob.type || "application/octet-stream";
+      const req = await requestUpload.mutateAsync({
+        mime_type: mime as
+          | "image/png"
+          | "image/jpeg"
+          | "image/webp"
+          | "video/mp4"
+          | "video/webm"
+          | "audio/m4a",
+        size_bytes: blob.size,
+      });
+      await fetch(req.upload_url, { method: "PUT", body: blob, headers: { "Content-Type": mime } });
+      const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      const sha256 = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      await confirmUpload.mutateAsync({ asset_id: req.asset_id, sha256, width: 0, height: 0 });
+      handleUpdateNodeData(nodeId, "outputAssetId", req.asset_id);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const canSpawnImage = ["script", "character", "storyboard_cell", "shot", "image", "video"].includes(nodeType);
 
@@ -365,14 +409,30 @@ export function NodeQuickActions({
       {outputAssetId && (
         <button
           type="button"
-          title="下载产出"
+          title="下载到本机"
+          aria-label="下载到本机"
           style={ACTION_BUTTON_STYLE}
           onClick={(e) => {
             e.stopPropagation();
-            setDownloadId(outputAssetId);
+            void handleDownload(outputAssetId);
           }}
         >
           <Download size={12} />
+        </button>
+      )}
+      {outputAssetId && (
+        <button
+          type="button"
+          title="存到云端（手动上传，长期保留）"
+          aria-label="存到云端"
+          style={ACTION_BUTTON_STYLE}
+          disabled={uploading}
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleUploadToCloud(outputAssetId);
+          }}
+        >
+          {uploading ? <Loader2 size={12} className="animate-spin" /> : <CloudUpload size={12} />}
         </button>
       )}
       {canSpawnImage && (

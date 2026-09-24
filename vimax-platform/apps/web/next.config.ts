@@ -8,6 +8,8 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // 验证构建与运行中的 dev server 隔离（VIMAX_BUILD_DIST=.next-verify 时）
+  distDir: process.env.VIMAX_BUILD_DIST ?? ".next",
   transpilePackages: ["@vimax/contracts"],
   outputFileTracingRoot: path.resolve(currentDir, "../.."),
 };

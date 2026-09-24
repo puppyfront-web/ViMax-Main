@@ -2,7 +2,7 @@
 
 import { trpc } from "@/lib/trpc/client";
 import { PageContainer, PageHeader, SegmentedControl, Badge, EmptyState, SkeletonList, cn } from "@vimax/ui";
-import { Image, Video, Music, File, Search, Grid3X3 } from "lucide-react";
+import { Image, Video, Music, File, Search, HardDrive, Cloud } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 
@@ -65,6 +65,17 @@ export default function AssetsPage() {
               <div className="p-3 space-y-1">
                 <div className="flex items-center justify-between gap-1">
                   <Badge variant="default" dot>{asset.kind in TYPE_LABELS ? TYPE_LABELS[asset.kind as AssetKind] : asset.kind}</Badge>
+                  {asset.offloaded_at ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-success)]" title="二进制仅存于生成时的设备">
+                      <HardDrive className="size-3" />
+                      本机
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-ink-tertiary)]" title="云端保留二进制">
+                      <Cloud className="size-3" />
+                      云端
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-[var(--color-text-tertiary)] truncate">{asset.asset_id.slice(0, 12)}…</p>
                 {asset.size_bytes != null && (

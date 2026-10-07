@@ -18,18 +18,28 @@ from vimax_image_worker.pipeline_handler import handle_pipeline_job
 
 
 def main():
-    r = redis.Redis.from_url(REDIS_URL)
+    # redis-py 8.x defaults socket_timeout to 5s — a blocking BRPOP with a
+    # matching command timeout races it, so keep the socket deadline wider
+    # than the BRPOP timeout (same shape as main.py's image worker loop).
+    def connect() -> redis.Redis:
+        return redis.Redis.from_url(REDIS_URL, socket_timeout=10, socket_connect_timeout=5)
+
+    r = connect()
     log.info("Pipeline worker started, waiting on %s", QUEUE_KEY)
 
     while True:
         try:
-            _, raw = r.brpop(QUEUE_KEY)
+            item = r.brpop(QUEUE_KEY, timeout=5)
         except redis.exceptions.RedisError:
             # A blocking BRPOP can die on a transient socket error; rebuild
             # the connection instead of taking the worker down.
             log.warning("Redis connection error on %s, reconnecting", QUEUE_KEY, exc_info=True)
-            r = redis.Redis.from_url(REDIS_URL)
+            r = connect()
             continue
+        # Idle tick — brpop returned no job within the timeout.
+        if item is None:
+            continue
+        _, raw = item
         payload = json.loads(raw)
         job_id = payload["job_id"]
         job_type = payload.get("job_type", "unknown")

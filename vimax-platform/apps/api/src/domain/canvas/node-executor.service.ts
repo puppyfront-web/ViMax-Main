@@ -7,12 +7,14 @@ import type {
   NodeRunBatchOutput,
   NodeRunInput,
   NodeRunOutput,
+  PipelineJobPayloadValidated,
+  PipelineJobType,
   VideoJobPayload,
   CharacterNodeData,
   ShotNodeData,
   StoryboardCellNodeData,
 } from "@vimax/contracts";
-import { composeImagePrompt, getImageModel, getMotionPreset, getVideoModel, getVideoAspectRatio, getVideoStylePreset } from "@vimax/contracts";
+import { composeImagePrompt, getImageModel, getMotionPreset, getVideoModel, getVideoAspectRatio, getVideoStylePreset, DEFAULT_TTS_MODEL } from "@vimax/contracts";
 import { KEY_LIGHT_POSITIONS, RIM_LIGHT_PRESETS, AMBIENT_LIGHT_OPTIONS } from "@vimax/contracts";
 import { getDefaultModel, getModelById } from "../model/model.service.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -1203,6 +1205,38 @@ async function runVideoNode(
 
 // ── Concat node executor ───────────────────────────────────────────
 
+/**
+ * Per-clip voiceover subtitle text for a concat node, aligned with the
+ * upstream asset order (voiceoverText preferred, audioDesc as fallback).
+ * Returns undefined when no upstream shot carries any text — the worker
+ * then skips the subtitle pass entirely.
+ */
+async function collectUpstreamSubtitles(
+  canvasId: string,
+  nodeId: string,
+): Promise<Array<string | null> | undefined> {
+  const upstream = await collectUpstreamAssets(canvasId, nodeId);
+  const sourceIds = [...new Set(upstream.map((input) => input.sourceNodeId))];
+  if (sourceIds.length === 0) return undefined;
+
+  const db = getDb();
+  const rows = await db
+    .select({ id: canvasNodes.id, type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), inArray(canvasNodes.id, sourceIds)));
+
+  const textByNode = new Map<string, string>();
+  for (const row of rows) {
+    if (row.type !== "shot") continue;
+    const data = row.data as ShotNodeData;
+    const text = (data.voiceoverText ?? data.audioDesc ?? "").trim();
+    if (text) textByNode.set(row.id, text);
+  }
+
+  const subtitles = upstream.map((input) => textByNode.get(input.sourceNodeId) ?? null);
+  return subtitles.some(Boolean) ? subtitles : undefined;
+}
+
 async function runConcatNode(
   node: typeof canvasNodes.$inferSelect,
   upstreamAssetIds: string[],
@@ -1211,8 +1245,15 @@ async function runConcatNode(
     throw new Error("canvas.concat_needs_upstream_videos");
   }
 
-  const data = node.data as { transition?: string };
+  const data = node.data as { transition?: string; burnSubtitles?: boolean };
   const transition = data.transition ?? "default";
+
+  // 口播字幕：opt-in（node.data.burnSubtitles）时，从上游 shot 节点收集
+  // 每个片段的口播文案（voiceoverText 优先，回退 audioDesc）。
+  let subtitles: Array<string | null> | undefined;
+  if (data.burnSubtitles) {
+    subtitles = await collectUpstreamSubtitles(node.canvasId, node.id);
+  }
 
   const db = getDb();
   // Resolve every clip's storage key + sha256 in a single query.
@@ -1236,8 +1277,9 @@ async function runConcatNode(
     throw new Error("canvas.concat_needs_upstream_videos");
   }
 
-  // Content-based cache: same clips, same order, same transition → reuse.
-  const cacheKey = buildConcatCacheKey({ clip_sha256s: clipSha256s, transition });
+  // Content-based cache: same clips, same order, same transition, same
+  // subtitles → reuse. A subtitled concat is a different output.
+  const cacheKey = buildConcatCacheKey({ clip_sha256s: clipSha256s, transition, subtitles });
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
@@ -1275,7 +1317,10 @@ async function runConcatNode(
   await enqueueConcatJob({
     job_id: jobId,
     job_type: "concat.videos",
-    input: { storage_keys: storageKeys },
+    input: {
+      storage_keys: storageKeys,
+      ...(subtitles ? { subtitles } : {}),
+    },
     callback: {
       event_channel: jobEventChannel(jobId),
       upload_bucket: getBucket(),
@@ -1712,8 +1757,10 @@ export async function runStoryPush(
   if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
 
   const data = node.data as ShotNodeData;
-  const defaultModel = await getDefaultModel("default", "image");
-  const apiKey = defaultModel.apiKey ?? config.arkApiKey();
+  const textModel = await getDefaultModel("default", "text");
+  const apiKey = textModel.apiKey?.trim();
+  if (!apiKey) throw new Error("provider.invalid_key");
+  const characters = await loadCanvasCharacterPayloads(canvasId);
   const jobId = randomUUID();
   const jobType = "pipeline.story_push";
   const queueName = "q.pipeline.full";
@@ -1736,16 +1783,448 @@ export async function runStoryPush(
   await enqueuePipelineJob({
     job_id: jobId,
     job_type: jobType,
-    credential: { class_path: "agents.StoryboardArtist", api_key: apiKey ?? "" },
-    input: { content: `Predict next 4 frames: ${(data.ffDesc ?? "")}. Motion: ${(data.motionDesc ?? "")}` },
+    credential: {
+      class_path: "agents.Screenwriter",
+      api_key: apiKey,
+      base_url: textModel.baseUrl ?? undefined,
+      model: textModel.vendorModelId ?? textModel.id,
+      model_provider: textModel.provider,
+    },
+    input: {
+      content: data.ffDesc ?? "",
+      characters,
+      ff_desc: data.ffDesc ?? "",
+      lf_desc: data.lfDesc ?? "",
+      motion_desc: data.motionDesc ?? "",
+      user_requirement: "Push the story forward with exactly 4 following shots.",
+    },
     callback: {
       event_channel: jobEventChannel(jobId),
       upload_bucket: getBucket(),
       upload_prefix: buildStorageKey("pipeline", jobId),
     },
     cache_key: `canvas:push:${jobId}`,
-    timeout_ms: 120_000,
+    timeout_ms: 180_000,
   });
+
+  await setNodeStatus(canvasId, nodeId, "running");
+
+  return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
+}
+
+// ── ViMax agent bridge executors (full agent surface) ───────────────
+//
+// Every remaining ViMax agent is reachable as one pipeline job. These
+// executors share the enqueue boilerplate through `enqueueAgentJob`; the
+// completion side (agent-result.ts) maps each JSON result onto canvas state.
+
+type AgentJobInput = PipelineJobPayloadValidated["input"];
+
+/** Primary agent class per bridge job — observability only; the Python
+ * pipeline worker dispatches on job_type, not class_path. */
+const AGENT_CLASS_PATHS: Record<PipelineJobType, string> = {
+  "pipeline.script2storyboard": "agents.StoryboardArtist",
+  "pipeline.story_push": "agents.ScriptPlanner",
+  "pipeline.idea2script": "agents.Screenwriter",
+  "pipeline.script2characters": "agents.CharacterExtractor",
+  "pipeline.plan_script": "agents.ScriptPlanner",
+  "pipeline.enhance_script": "agents.ScriptEnhancer",
+  "pipeline.novel2scenes": "agents.NovelCompressor",
+  "pipeline.select_reference": "agents.ReferenceImageSelector",
+  "pipeline.select_best_image": "agents.BestImageSelector",
+  "pipeline.camera_tree": "agents.CameraImageGenerator",
+  "pipeline.character_portraits": "agents.CharacterPortraitsGenerator",
+};
+
+async function loadCanvasCharacterPayloads(canvasId: string) {
+  const db = getDb();
+  const rows = await db
+    .select({ type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "character")));
+  return mapCanvasCharactersToPayload(
+    rows.map((row) => ({ type: row.type, data: row.data as Record<string, unknown> })),
+  );
+}
+
+async function enqueueAgentJob(params: {
+  canvasId: string;
+  nodeId: string;
+  nodeType: string;
+  jobType: PipelineJobType;
+  input: AgentJobInput;
+  cachePrefix: string;
+  timeoutMs?: number;
+}): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, params.canvasId), eq(canvasNodes.id, params.nodeId)))
+    .limit(1);
+  if (!node || node.type !== params.nodeType) throw new Error("canvas.node_not_found");
+
+  const textModel = await getDefaultModel("default", "text");
+  const apiKey = textModel.apiKey?.trim();
+  if (!apiKey) throw new Error("provider.invalid_key");
+
+  const jobId = randomUUID();
+  const queueName = "q.pipeline.full";
+
+  await assertNoInFlightNodeJob(params.canvasId, params.nodeId);
+  await db.insert(jobs).values({
+    id: jobId,
+    jobType: params.jobType,
+    queueName,
+    bullmqJobId: jobId,
+    inputSnapshot: { ...params.input, _canvas: { canvas_id: params.canvasId, node_id: params.nodeId } },
+    cacheKey: `${params.cachePrefix}:${jobId}`,
+    status: "queued",
+  });
+  await db.insert(jobEvents).values({
+    jobId,
+    eventType: "queued",
+    payload: { message: `${params.jobType} queued`, node_id: params.nodeId },
+  });
+
+  await enqueuePipelineJob({
+    job_id: jobId,
+    job_type: params.jobType,
+    credential: {
+      class_path: AGENT_CLASS_PATHS[params.jobType],
+      api_key: apiKey,
+      base_url: textModel.baseUrl ?? undefined,
+      model: textModel.vendorModelId ?? textModel.id,
+      model_provider: textModel.provider,
+    },
+    input: params.input,
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("pipeline", jobId),
+    },
+    cache_key: `${params.cachePrefix}:${jobId}`,
+    timeout_ms: params.timeoutMs ?? 180_000,
+  });
+
+  await setNodeStatus(params.canvasId, params.nodeId, "running");
+  broadcastNodeStatus(params.canvasId, params.nodeId, "running");
+
+  return { job_id: jobId, node_id: params.nodeId, job_type: params.jobType, queue_name: queueName };
+}
+
+async function loadScriptContent(canvasId: string, nodeId: string): Promise<string> {
+  const db = getDb();
+  const [node] = await db
+    .select({ data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  const content = (node?.data as { content?: string } | undefined)?.content?.trim();
+  if (!content) throw new Error("canvas.script_empty");
+  return content;
+}
+
+/** 创意 → 故事 → 场景剧本（Screenwriter 两段式）。 */
+export async function runIdea2Script(
+  canvasId: string,
+  nodeId: string,
+  userRequirement?: string,
+): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.idea2script",
+    input: { content, idea: content, user_requirement: userRequirement },
+    cachePrefix: "canvas:i2s",
+    timeoutMs: 300_000,
+  });
+}
+
+/** 剧本大纲规划（ScriptPlanner）。 */
+export async function runPlanScript(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.plan_script",
+    input: { content, idea: content },
+    cachePrefix: "canvas:plan",
+    timeoutMs: 300_000,
+  });
+}
+
+/** 剧本连续性润色（ScriptEnhancer）。 */
+export async function runEnhanceScript(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.enhance_script",
+    input: { content },
+    cachePrefix: "canvas:enhance",
+    timeoutMs: 300_000,
+  });
+}
+
+/** 剧本 → 角色清单（CharacterExtractor），完成后展开为角色节点。 */
+export async function runScript2Characters(
+  canvasId: string,
+  nodeId: string,
+): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.script2characters",
+    input: { content },
+    cachePrefix: "canvas:s2c",
+  });
+}
+
+/** 小说改编全链（压缩 → 事件 → 场景 → 角色融合）。 */
+export async function runNovel2Scenes(
+  canvasId: string,
+  nodeId: string,
+  maxEvents = 3,
+  maxScenesPerEvent = 2,
+): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.novel2scenes",
+    input: { content, novel_text: content, max_events: maxEvents, max_scenes_per_event: maxScenesPerEvent },
+    cachePrefix: "canvas:n2s",
+    timeoutMs: 600_000,
+  });
+}
+
+/** ReferenceImageSelector：为镜头首帧选择角色参考图并构建生成提示词。 */
+export async function runSelectReference(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select({ type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
+
+  const data = node.data as ShotNodeData;
+  const visibleCharIds = data.visibleCharIds ?? [];
+  if (visibleCharIds.length === 0) throw new Error("canvas.character_needs_front_view");
+
+  const charRows = await db
+    .select({ id: canvasNodes.id, data: canvasNodes.data, outputAssetId: canvasNodes.outputAssetId })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), inArray(canvasNodes.id, visibleCharIds)));
+
+  const refAssetIds = charRows
+    .map((row) => {
+      const charData = row.data as { frontAssetId?: string };
+      return charData.frontAssetId ?? row.outputAssetId;
+    })
+    .filter((id): id is string => Boolean(id));
+  if (refAssetIds.length === 0) throw new Error("canvas.character_needs_front_view");
+
+  const assetRows = await db
+    .select({ id: assets.id, storageKey: assets.storageKey })
+    .from(assets)
+    .where(inArray(assets.id, refAssetIds));
+  const keyByAssetId = new Map(assetRows.map((row) => [row.id, row.storageKey]));
+
+  const reference_pairs = charRows
+    .map((row) => {
+      const charData = row.data as { name?: string; frontAssetId?: string };
+      const storageKey = keyByAssetId.get(charData.frontAssetId ?? row.outputAssetId ?? "");
+      return storageKey ? { storage_key: storageKey, text: charData.name ?? "" } : null;
+    })
+    .filter((pair): pair is { storage_key: string; text: string } => pair !== null);
+
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "shot",
+    jobType: "pipeline.select_reference",
+    input: {
+      content: data.ffDesc ?? "",
+      target_description: data.ffDesc ?? "",
+      reference_pairs,
+    },
+    cachePrefix: "canvas:refsel",
+  });
+}
+
+/** BestImageSelector：按一致性为多变体图像节点选优。 */
+export async function runSelectBestImage(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select({ type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "image") throw new Error("canvas.node_not_found");
+
+  const data = node.data as { prompt?: string; variants?: Array<{ assetId: string; index: number }> };
+  const variants = data.variants ?? [];
+  if (variants.length < 2) throw new Error("canvas.variants_empty");
+
+  const assetRows = await db
+    .select({ id: assets.id, storageKey: assets.storageKey })
+    .from(assets)
+    .where(inArray(assets.id, variants.map((v) => v.assetId)));
+  const keyByAssetId = new Map(assetRows.map((row) => [row.id, row.storageKey]));
+
+  // Order candidates by variant index so best_index maps back to the gallery.
+  const ordered = [...variants].sort((a, b) => a.index - b.index);
+  const candidate_storage_keys = ordered
+    .map((variant) => keyByAssetId.get(variant.assetId))
+    .filter((key): key is string => Boolean(key));
+  if (candidate_storage_keys.length < 2) throw new Error("canvas.variants_empty");
+
+  const charRows = await db
+    .select({ data: canvasNodes.data, outputAssetId: canvasNodes.outputAssetId })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "character")));
+  const reference_pairs = charRows
+    .map((row) => {
+      const charData = row.data as { name?: string; frontAssetId?: string };
+      const storageKey = keyByAssetId.get(charData.frontAssetId ?? row.outputAssetId ?? "");
+      return storageKey ? { storage_key: storageKey, text: charData.name ?? "" } : null;
+    })
+    .filter((pair): pair is { storage_key: string; text: string } => pair !== null);
+
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "image",
+    jobType: "pipeline.select_best_image",
+    input: {
+      content: data.prompt ?? "",
+      target_description: data.prompt ?? "",
+      candidate_storage_keys,
+      reference_pairs,
+    },
+    cachePrefix: "canvas:bestsel",
+  });
+}
+
+/** CameraImageGenerator.construct_camera_tree：从分镜格构建机位层级。 */
+export async function runCameraTree(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "script") throw new Error("canvas.node_not_found");
+
+  const cells = await db
+    .select({ data: canvasNodes.data })
+    .from(canvasNodes)
+    .innerJoin(canvasEdges, eq(canvasEdges.targetNodeId, canvasNodes.id))
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "storyboard_cell"), eq(canvasEdges.sourceNodeId, nodeId)));
+
+  const briefs = cells
+    .map((row) => row.data as unknown as StoryboardCellNodeData)
+    .filter((cell) => typeof cell.shotBrief === "string");
+  if (briefs.length === 0) throw new Error("canvas.storyboard_empty");
+
+  const shot_descs = briefs.map((cell, index) => ({
+    idx: index,
+    is_last: index === briefs.length - 1,
+    cam_idx: cell.cameraIdx,
+    visual_desc: cell.shotBrief,
+  }));
+  const cameraIdxs = [...new Set(briefs.map((cell) => cell.cameraIdx))];
+  const cameras = cameraIdxs.map((idx) => ({
+    idx,
+    active_shot_idxs: briefs
+      .map((cell, index) => (cell.cameraIdx === idx ? index : -1))
+      .filter((index) => index >= 0),
+  }));
+
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.camera_tree",
+    input: { content: "camera tree", cameras, shot_descs },
+    cachePrefix: "canvas:camtree",
+  });
+}
+
+/** CharacterPortraitsGenerator：三视图一次生成（front → side/back 参考）。 */
+export async function runCharacterPortraits(
+  canvasId: string,
+  nodeId: string,
+  style?: string,
+): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "character") throw new Error("canvas.node_not_found");
+
+  const data = node.data as CharacterNodeData;
+  if (!data.name?.trim()) throw new Error("canvas.character_empty");
+
+  const imageModel = await resolveImageModel(undefined);
+  const apiKey = imageModel.api_key ?? config.arkApiKey();
+  if (!apiKey) throw new Error("provider.invalid_key");
+
+  const jobId = randomUUID();
+  const jobType = "pipeline.character_portraits";
+  const queueName = "q.pipeline.full";
+
+  await assertNoInFlightNodeJob(canvasId, nodeId);
+  await db.insert(jobs).values({
+    id: jobId, jobType, queueName, bullmqJobId: jobId,
+    inputSnapshot: {
+      character: { name: data.name, description: data.description ?? "" },
+      _canvas: { canvas_id: canvasId, node_id: nodeId },
+    },
+    cacheKey: `canvas:portraits:${jobId}`,
+    status: "queued",
+  });
+  await db.insert(jobEvents).values({
+    jobId, eventType: "queued",
+    payload: { message: "Character portraits queued", node_id: nodeId },
+  });
+
+  await enqueuePipelineJob({
+    job_id: jobId,
+    job_type: jobType,
+    credential: {
+      class_path: imageModel.class_path,
+      api_key: apiKey,
+      base_url: imageModel.base_url,
+      model: imageModel.model,
+    },
+    input: {
+      content: data.name,
+      character: { name: data.name, description: data.description ?? "" },
+      style: style ?? "",
+    },
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("generated", jobId),
+    },
+    cache_key: `canvas:portraits:${jobId}`,
+    timeout_ms: 300_000,
+  });
+
+  await setNodeStatus(canvasId, nodeId, "running");
+  broadcastNodeStatus(canvasId, nodeId, "running");
 
   return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
 }
@@ -1845,6 +2324,82 @@ export async function runAudioGeneration(
     cache_key: `canvas:audio:${jobId}`,
     timeout_ms: 60_000,
   });
+
+  return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
+}
+
+// ── Voiceover TTS executor (口播配音) ────────────────────────────────
+//
+// Synthesizes the shot's voiceover line (voiceoverText, falling back to
+// audioDesc) into an audio asset. Completion attaches it to the shot's
+// data.voiceoverAssetId WITHOUT touching outputAssetId or cascading — the
+// shot's visual output is unchanged.
+
+export async function runVoiceover(
+  canvasId: string,
+  nodeId: string,
+): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
+
+  const data = node.data as ShotNodeData;
+  const text = (data.voiceoverText ?? data.audioDesc ?? "").trim();
+  if (!text) throw new Error("canvas.audio_desc_empty");
+
+  const ttsModel = await getDefaultModel("default", "tts");
+  const apiKey = ttsModel.apiKey?.trim();
+  if (!apiKey) throw new Error("provider.invalid_key");
+
+  const jobId = randomUUID();
+  const jobType = "audio.tts";
+  const queueName = "q.audio.std";
+
+  const inputSnapshot = {
+    voiceover_text: text,
+    _voiceover: true,
+    _canvas: { canvas_id: canvasId, node_id: nodeId },
+  };
+
+  await assertNoInFlightNodeJob(canvasId, nodeId);
+  await db.insert(jobs).values({
+    id: jobId, jobType, queueName, bullmqJobId: jobId,
+    inputSnapshot, cacheKey: `canvas:tts:${jobId}`, status: "queued",
+  });
+  await db.insert(jobEvents).values({
+    jobId, eventType: "queued",
+    payload: { message: "Voiceover TTS queued", node_id: nodeId },
+  });
+
+  await enqueueAudioJob({
+    job_id: jobId,
+    job_type: jobType,
+    input: {
+      prompt: text,
+      text,
+      voice: (ttsModel.config as Record<string, unknown> | undefined)?.voice as string | undefined,
+    },
+    credential: {
+      class_path: ttsModel.classPath ?? DEFAULT_TTS_MODEL.classPath,
+      api_key: apiKey,
+      base_url: ttsModel.baseUrl ?? undefined,
+      model: ttsModel.vendorModelId ?? undefined,
+    },
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("audio", jobId),
+    },
+    cache_key: `canvas:tts:${jobId}`,
+    timeout_ms: 120_000,
+  });
+
+  await setNodeStatus(canvasId, nodeId, "running");
+  broadcastNodeStatus(canvasId, nodeId, "running");
 
   return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
 }

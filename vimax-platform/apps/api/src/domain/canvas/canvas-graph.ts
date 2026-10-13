@@ -24,6 +24,8 @@ export interface UpstreamNodeLike {
 /** A single resolved upstream asset bound to a target input slot. */
 export interface UpstreamInput {
   assetId: string;
+  /** Id of the node this asset flows out of. */
+  sourceNodeId: string;
   /** Handle on the source node the edge comes from (e.g. "output", "first_frame"). */
   sourceHandle: string | null;
   /** Handle on the target node the edge feeds into (e.g. "reference", "first_frame"). */
@@ -108,6 +110,7 @@ export function resolveUpstreamInputs(
     if (source === undefined || source.outputAssetId === null) continue;
     result.push({
       assetId: source.outputAssetId,
+      sourceNodeId: edge.sourceNodeId,
       sourceHandle: edge.sourceHandle ?? null,
       targetHandle: edge.targetHandle ?? null,
       sourceNodeType: source.type,

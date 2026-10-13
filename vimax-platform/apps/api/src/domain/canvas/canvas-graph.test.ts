@@ -103,12 +103,14 @@ test("resolveUpstreamInputs returns assets from edges targeting the node", () =>
   assert.equal(result.length, 2);
   assert.deepEqual(result[0], {
     assetId: "asset-1",
+    sourceNodeId: "img1",
     sourceHandle: "output",
     targetHandle: "first_frame",
     sourceNodeType: "image",
   });
   assert.deepEqual(result[1], {
     assetId: "asset-2",
+    sourceNodeId: "img2",
     sourceHandle: "output",
     targetHandle: "last_frame",
     sourceNodeType: "image",
@@ -150,8 +152,8 @@ test("resolveUpstreamInputs returns nothing for a node with no incoming edges", 
 
 test("pickByHandle returns the asset bound to the given target handle", () => {
   const inputs = [
-    { assetId: "ff", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
-    { assetId: "lf", sourceHandle: "output", targetHandle: "last_frame", sourceNodeType: "image" },
+    { assetId: "ff", sourceNodeId: "n1", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
+    { assetId: "lf", sourceNodeId: "n2", sourceHandle: "output", targetHandle: "last_frame", sourceNodeType: "image" },
   ];
   assert.equal(pickByHandle(inputs, "first_frame"), "ff");
   assert.equal(pickByHandle(inputs, "last_frame"), "lf");
@@ -159,7 +161,7 @@ test("pickByHandle returns the asset bound to the given target handle", () => {
 
 test("pickByHandle returns null when no input carries the handle", () => {
   const inputs = [
-    { assetId: "ff", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
+    { assetId: "ff", sourceNodeId: "n1", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
   ];
   assert.equal(pickByHandle(inputs, "last_frame"), null);
   assert.equal(pickByHandle([], "first_frame"), null);
@@ -167,8 +169,8 @@ test("pickByHandle returns null when no input carries the handle", () => {
 
 test("pickByHandle returns the first match when handles collide", () => {
   const inputs = [
-    { assetId: "a", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
-    { assetId: "b", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
+    { assetId: "a", sourceNodeId: "n3", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
+    { assetId: "b", sourceNodeId: "n4", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
   ];
   assert.equal(pickByHandle(inputs, "reference"), "a");
 });

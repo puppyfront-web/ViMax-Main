@@ -11,6 +11,7 @@ import { broadcastNodeStatus } from "../canvas/node-status.js";
 import { appendVariant, isVariantJob, type VariantEntry } from "../canvas/variations.js";
 import { inferAssetKind, shouldCreateAsset } from "../asset/asset-utils.js";
 import { persistStoryboardSpawn } from "../canvas/storyboard-spawn.js";
+import { applyAgentResult } from "../canvas/agent-result.js";
 
 function mapEventType(type: JobEventValidated["type"]) {
   switch (type) {
@@ -61,7 +62,7 @@ export async function handleJobEvent(raw: string): Promise<void> {
     const cells = output.cells;
 
     const [job] = await db
-      .select({ inputSnapshot: jobs.inputSnapshot })
+      .select({ inputSnapshot: jobs.inputSnapshot, jobType: jobs.jobType })
       .from(jobs)
       .where(eq(jobs.id, parsed.job_id))
       .limit(1);
@@ -86,6 +87,41 @@ export async function handleJobEvent(raw: string): Promise<void> {
       } catch (err) {
         console.error(
           `[canvas hook] Failed to spawn storyboard cells for node ${canvasMeta.node_id}:`,
+          (err as Error).message,
+        );
+      }
+
+      await db
+        .update(jobs)
+        .set({
+          status: "succeeded",
+          progress: 100,
+          finishedAt: new Date(),
+        })
+        .where(eq(jobs.id, parsed.job_id));
+
+      broadcastJobEvent(parsed.job_id, parsed);
+      return;
+    }
+
+    // ── Agent bridge results: characters, scripts, selections, trees ──
+    if (
+      output.result &&
+      !Array.isArray(cells) &&
+      canvasMeta?.canvas_id &&
+      canvasMeta?.node_id
+    ) {
+      try {
+        await applyAgentResult(
+          job?.jobType ?? "",
+          canvasMeta.canvas_id,
+          canvasMeta.node_id,
+          output.result,
+          parsed.job_id,
+        );
+      } catch (err) {
+        console.error(
+          `[canvas hook] Failed to apply agent result for node ${canvasMeta.node_id}:`,
           (err as Error).message,
         );
       }
@@ -143,6 +179,27 @@ export async function handleJobEvent(raw: string): Promise<void> {
     if (canvasMeta?.canvas_id && canvasMeta?.node_id && assetId) {
       try {
         const snapshot = job?.inputSnapshot as Record<string, unknown> | undefined;
+
+        // ── Voiceover TTS: attach audio to shot data, no visual cascade ──
+        // The shot's visual output is unchanged, so neither outputAssetId
+        // nor the dirty-cascade may fire.
+        if (snapshot?._voiceover === true) {
+          await updateNodeDataField(canvasMeta.canvas_id, canvasMeta.node_id, "voiceoverAssetId", assetId);
+          await setNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done");
+          broadcastNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done", null, parsed.job_id);
+
+          await db
+            .update(jobs)
+            .set({
+              status: "succeeded",
+              progress: 100,
+              outputAssetId: assetId,
+              finishedAt: new Date(),
+            })
+            .where(eq(jobs.id, parsed.job_id));
+          broadcastJobEvent(parsed.job_id, parsed);
+          return;
+        }
 
         // ── Variant jobs: gather into a gallery; no cascade until picked ──
         if (isVariantJob(snapshot)) {

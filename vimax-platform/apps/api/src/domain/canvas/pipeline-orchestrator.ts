@@ -10,6 +10,8 @@ import {
   runNode,
   runScript2Storyboard,
   runStoryboard2Shot,
+  runScript2Characters,
+  runCharacterPortraits,
 } from "./node-executor.service.js";
 import { getDefaultModel } from "../model/model.service.js";
 
@@ -305,6 +307,85 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
   void edgeTargets;
 }
 
+/**
+ * Characters stage (best effort): extract the cast from the script via
+ * CharacterExtractor, generate each character's three-view portraits via
+ * CharacterPortraitsGenerator, then wire every shot's visibleCharIds so
+ * first-frame generation feeds the portraits as references (cross-shot
+ * character consistency, mirrors idea2video).
+ */
+async function ensureCharacters(
+  canvasId: string,
+  scriptNodeId: string,
+  runId: string,
+  signal: AbortSignal,
+  errors: AutoPipelineResult["errors"],
+): Promise<void> {
+  const db = getDb();
+  emit(canvasId, runId, {
+    type: "pipeline.stage_start",
+    runId,
+    canvasId,
+    stage: "characters",
+    nodeIds: [scriptNodeId],
+  });
+
+  try {
+    let characters = (await loadNodes(canvasId)).filter((n) => n.type === "character");
+
+    if (characters.length === 0) {
+      const job = await runScript2Characters(canvasId, scriptNodeId);
+      const status = await waitForJob(job.job_id, signal, 300_000);
+      if (status === "failed") throw new Error("script2characters failed");
+      characters = (await loadNodes(canvasId)).filter((n) => n.type === "character");
+    }
+
+    for (const character of characters) {
+      const data = character.data as { frontAssetId?: string };
+      if (data.frontAssetId) continue;
+      const job = await runCharacterPortraits(canvasId, character.id);
+      const status = await waitForJob(job.job_id, signal, 300_000);
+      if (status === "failed") {
+        errors.push({ stage: "characters", nodeId: character.id, error: "portraits failed" });
+      }
+    }
+
+    const characterIds = (await loadNodes(canvasId))
+      .filter((n) => n.type === "character")
+      .map((n) => n.id);
+    for (const shot of (await loadNodes(canvasId)).filter((n) => n.type === "shot")) {
+      const data = shot.data as { visibleCharIds?: string[] };
+      if (data.visibleCharIds?.length) continue;
+      await db
+        .update(canvasNodes)
+        .set({ data: { ...data, visibleCharIds: characterIds } })
+        .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, shot.id)));
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message === "pipeline.cancelled") throw err;
+    errors.push({
+      stage: "characters",
+      nodeId: scriptNodeId,
+      error: err instanceof Error ? err.message : "unknown",
+    });
+    emit(canvasId, runId, {
+      type: "pipeline.node_failed",
+      runId,
+      canvasId,
+      stage: "characters",
+      nodeId: scriptNodeId,
+      error: err instanceof Error ? err.message : "unknown",
+    });
+  }
+
+  emit(canvasId, runId, {
+    type: "pipeline.stage_done",
+    runId,
+    canvasId,
+    stage: "characters",
+  });
+}
+
 async function runNodesInOrder(
   canvasId: string,
   nodeIds: string[],
@@ -449,6 +530,8 @@ export async function runAutoPipelineAsync(
       canvasId,
       stage: "storyboard",
     });
+
+    await ensureCharacters(canvasId, scriptNodeId, runId, signal, errors);
 
     const cells = (await loadNodes(canvasId)).filter((n) => n.type === "storyboard_cell");
     emit(canvasId, runId, {

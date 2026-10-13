@@ -3,7 +3,7 @@ WORKDIR /app
 
 ARG INSTALL_FFMPEG=false
 RUN if [ "$INSTALL_FFMPEG" = "true" ]; then \
-      apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*; \
+      apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk && rm -rf /var/lib/apt/lists/*; \
     fi
 RUN pip install --no-cache-dir uv
 # pypi.org unreachable from some build environments; default to a mirror (override with --build-arg)

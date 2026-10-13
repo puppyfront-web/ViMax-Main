@@ -63,7 +63,7 @@ export interface MessageReference {
 
 // ── WebSocket Message Protocol ──────────────────────────────────────
 
-export type PipelineStage = "storyboard" | "shot" | "image" | "video" | "concat";
+export type PipelineStage = "characters" | "storyboard" | "shot" | "image" | "video" | "concat";
 
 /** Client → Server messages */
 export type ClientWsMessage =

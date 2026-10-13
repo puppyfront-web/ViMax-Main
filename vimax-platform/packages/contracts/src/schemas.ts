@@ -180,6 +180,9 @@ export const ConcatJobPayloadSchema = z.object({
   job_type: z.enum(["concat.videos"]),
   input: z.object({
     storage_keys: z.array(z.string()),
+    // Per-clip subtitle text (aligned with storage_keys; null = no subtitle
+    // for that clip). Present only when the concat node opts into burning.
+    subtitles: z.array(z.string().nullable()).optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -230,6 +233,8 @@ export const JobEventSchema = z.discriminatedUnion("type", [
           }),
         )
         .optional(),
+      // Agent bridge results (characters, scripts, selections, trees).
+      result: z.record(z.string(), z.unknown()).optional(),
     }),
   }),
   z.object({
@@ -268,6 +273,34 @@ export const PipelineJobPayloadSchema = z.object({
       .optional(),
     user_requirement: z.string().optional(),
     reference_storage_keys: z.array(z.string()).optional(),
+    // ── ViMax agent bridge inputs ──
+    idea: z.string().optional(),
+    story: z.string().optional(),
+    novel_text: z.string().optional(),
+    max_events: z.number().int().positive().optional(),
+    max_scenes_per_event: z.number().int().positive().optional(),
+    character: z
+      .object({
+        name: z.string(),
+        description: z.string(),
+      })
+      .optional(),
+    style: z.string().optional(),
+    reference_pairs: z
+      .array(
+        z.object({
+          storage_key: z.string(),
+          text: z.string(),
+        }),
+      )
+      .optional(),
+    candidate_storage_keys: z.array(z.string()).optional(),
+    target_description: z.string().optional(),
+    cameras: z.array(z.record(z.string(), z.unknown())).optional(),
+    shot_descs: z.array(z.record(z.string(), z.unknown())).optional(),
+    ff_desc: z.string().optional(),
+    lf_desc: z.string().optional(),
+    motion_desc: z.string().optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -288,7 +321,20 @@ export const AudioJobPayloadSchema = z.object({
   input: z.object({
     prompt: z.string(),
     duration_sec: z.number().int().positive().optional(),
+    // ── TTS (audio.tts) ──
+    text: z.string().optional(),
+    voice: z.string().optional(),
   }),
+  // TTS routes through a vendor generator (same credential contract as
+  // image/video jobs); the silent-WAV stub ignores it.
+  credential: z
+    .object({
+      class_path: z.string(),
+      api_key: z.string(),
+      base_url: z.string().optional(),
+      model: z.string().optional(),
+    })
+    .optional(),
   callback: z.object({
     event_channel: z.string(),
     upload_bucket: z.string(),

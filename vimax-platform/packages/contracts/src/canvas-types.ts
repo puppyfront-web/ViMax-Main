@@ -40,6 +40,16 @@ export const CANVAS_JOB_TYPES = [
   "image.split_grid",
   "pipeline.story_push",
   "audio.generate",
+  // ── ViMax agent bridge job types (full agent surface) ──
+  "pipeline.idea2script",
+  "pipeline.script2characters",
+  "pipeline.plan_script",
+  "pipeline.enhance_script",
+  "pipeline.novel2scenes",
+  "pipeline.select_reference",
+  "pipeline.select_best_image",
+  "pipeline.camera_tree",
+  "pipeline.character_portraits",
 ] as const;
 
 export type CanvasJobType = (typeof CANVAS_JOB_TYPES)[number];
@@ -70,6 +80,16 @@ export const CANVAS_QUEUES = {
   "image.split_grid": "q.image.std",
   "pipeline.story_push": "q.pipeline.full",
   "audio.generate": "q.audio.std",
+  // ── ViMax agent bridges all run on the pipeline worker ──
+  "pipeline.idea2script": "q.pipeline.full",
+  "pipeline.script2characters": "q.pipeline.full",
+  "pipeline.plan_script": "q.pipeline.full",
+  "pipeline.enhance_script": "q.pipeline.full",
+  "pipeline.novel2scenes": "q.pipeline.full",
+  "pipeline.select_reference": "q.pipeline.full",
+  "pipeline.select_best_image": "q.pipeline.full",
+  "pipeline.camera_tree": "q.pipeline.full",
+  "pipeline.character_portraits": "q.pipeline.full",
 } as const satisfies Record<string, string>;
 
 // ── Node Data Shapes (stored in canvas_nodes.data JSONB) ───────────
@@ -104,6 +124,10 @@ export interface ShotNodeData {
   lfVisCharIdxs: number[];
   /** 折叠为首帧 prompt 的 "Avoid: ..." 从句（见 runShotNode）。 */
   negativePrompt?: string;
+  /** 口播文案（广告镜头的台词）。TTS 以此合成配音；无则回退 audioDesc。 */
+  voiceoverText?: string;
+  /** 已合成的口播音频资产（audio.tts 完成后回填）。 */
+  voiceoverAssetId?: string;
   /** IDs of character nodes whose portraits (front view) are fed as
    * references when generating this shot's first frame — drives cross-shot
    * character consistency (mirrors idea2video's ff_vis_char_idxs). */

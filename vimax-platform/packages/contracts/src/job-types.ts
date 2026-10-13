@@ -404,15 +404,39 @@ export const DEFAULT_TEXT_MODEL = {
   supportsThinking: true,
 };
 
-// ── Pipeline Job Types ─────────────────────────────────────────────
+// ── Default TTS Model (口播配音 fallback) ──────────────────────────────
+
+export const DEFAULT_TTS_MODEL = {
+  id: "yunwu-tts-1",
+  label: "OpenAI TTS (Yunwu)",
+  provider: "yunwu" as const,
+  classPath: "tools.TtsGeneratorOpenAIAPI",
+  baseUrl: "https://yunwu.ai/v1/audio/speech",
+  vendorModelId: "tts-1",
+  voice: "alloy",
+};
+
+// ── Pipeline Job Types (ViMax agent bridges) ───────────────────────
+//
+// Each type maps 1:1 to a bridge function in the Python pipeline worker
+// (vimax_image_worker/pipeline_handler.py PIPELINE_JOB_HANDLERS).
 
 export const PIPELINE_JOB_TYPES = [
   "pipeline.script2storyboard",
   "pipeline.story_push",
+  "pipeline.idea2script",
+  "pipeline.script2characters",
+  "pipeline.plan_script",
+  "pipeline.enhance_script",
+  "pipeline.novel2scenes",
+  "pipeline.select_reference",
+  "pipeline.select_best_image",
+  "pipeline.camera_tree",
+  "pipeline.character_portraits",
 ] as const;
 export type PipelineJobType = (typeof PIPELINE_JOB_TYPES)[number];
 
 // ── Audio Job Types ────────────────────────────────────────────────
 
-export const AUDIO_JOB_TYPES = ["audio.generate"] as const;
+export const AUDIO_JOB_TYPES = ["audio.generate", "audio.tts"] as const;
 export type AudioJobType = (typeof AUDIO_JOB_TYPES)[number];

@@ -50,7 +50,7 @@ class ImageJobPayload(BaseModel):
     timeout_ms: int = Field(default=120_000)
 
 
-def _build_generator(credential: ImageJobCredential):
+def build_image_generator(credential: ImageJobCredential):
     module_path, cls_name = credential.class_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(module_path), cls_name)
     candidates: dict[str, Any] = {"api_key": credential.api_key}
@@ -90,7 +90,7 @@ async def _run(payload: ImageJobPayload, redis_client) -> None:
         )
         await reporter.progress(20, "Loading image generator")
 
-        generator = _build_generator(payload.credential)
+        generator = build_image_generator(payload.credential)
         await reporter.progress(40, "Calling image model")
 
         output = await generator.generate_single_image(

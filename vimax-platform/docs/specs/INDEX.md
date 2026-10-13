@@ -12,6 +12,7 @@
 | [BACKEND-PIPELINE.md](./BACKEND-PIPELINE.md) | ✅ 已确认 | 后端管线修复规格 |
 | [AUTO-GENERATION-V1.md](./AUTO-GENERATION-V1.md) | ✅ 已确认 | 创意输入自动生成分镜/镜头/成片规格 |
 | [PROMPT-WORDS-RESEARCH.md](./PROMPT-WORDS-RESEARCH.md) | ✅ P0 已实现 | 提示词「联想词 + 限制词」板块调研与接入规格 |
+| [AD-CREATIVE-RESEARCH.md](./AD-CREATIVE-RESEARCH.md) | ✅ P0 已实现 | 广告创意工具调研：竞品格局 + DR 脚本方法论；落地为 `create_ad` 决策工具、广告创意契约层与 3 个广告工作流模板 |
 
 ## 里程碑关系
 

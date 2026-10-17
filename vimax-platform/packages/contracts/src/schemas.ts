@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ALL_IMAGE_JOB_TYPES, IMAGE_MODES, IMAGE_SIZES, PIPELINE_JOB_TYPES, AUDIO_JOB_TYPES, VIDEO_ASPECT_RATIOS } from "./job-types.js";
+import { ALL_IMAGE_JOB_TYPES, COMPLIANCE_PLATFORMS, IMAGE_EDIT_OPS, IMAGE_MODES, IMAGE_SIZES, PIPELINE_JOB_TYPES, AUDIO_JOB_TYPES, VIDEO_ASPECT_RATIOS } from "./job-types.js";
 
 export const ImageGenerateInputSchema = z
   .object({
@@ -129,8 +129,28 @@ export const ImageJobPayloadSchema = z.object({
   }),
   input: z.object({
     prompt: z.string(),
-    size: z.enum(IMAGE_SIZES),
+    // 画布侧电商比例会产出 IMAGE_SIZES 之外的合法 WxH（如 1024x1536），
+    // 桥接层只校验形状，具体尺寸由模型能力兜底。
+    size: z.string().regex(/^\d{3,4}x\d{3,4}$/),
     reference_storage_keys: z.array(z.string()).optional(),
+    source_storage_key: z.string().optional(),
+    mask_storage_key: z.string().optional(),
+    edit_op: z.enum(IMAGE_EDIT_OPS).optional(),
+    seed: z.number().int().min(0).optional(),
+    text_layers: z
+      .array(
+        z.object({
+          text: z.string().min(1),
+          x: z.number().min(0).max(1),
+          y: z.number().min(0).max(1),
+          font_size: z.number().int().min(8).max(512),
+          color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+          align: z.enum(["left", "center", "right"]).optional(),
+          font: z.string().optional(),
+        }),
+      )
+      .optional(),
+    compliance_platforms: z.array(z.enum(COMPLIANCE_PLATFORMS)).optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -139,6 +159,11 @@ export const ImageJobPayloadSchema = z.object({
   }),
   cache_key: z.string(),
   timeout_ms: z.number().int().positive(),
+  // provider 瞬时失败（rate_limited/timeout）时 Python worker 的已尝试次数，
+  // 首次执行缺省为 0；重试由 worker 侧退避后重入队完成。
+  attempt: z.number().int().min(0).max(5).optional(),
+  // W3C traceparent，贯通 TS 决策层 → BullMQ → Python worker 的观测链。
+  traceparent: z.string().optional(),
 });
 
 export type ImageJobPayloadValidated = z.infer<typeof ImageJobPayloadSchema>;

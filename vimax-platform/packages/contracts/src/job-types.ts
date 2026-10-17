@@ -1,6 +1,13 @@
 export const IMAGE_JOB_TYPES = [
   "image.t2i",
   "image.i2i",
+  "image.edit",
+] as const;
+
+/** Image-pipeline jobs that post-process or analyse an existing image. */
+export const IMAGE_POST_JOB_TYPES = [
+  "image.text",
+  "image.compliance",
 ] as const;
 
 /** Canvas-originated job types that still use the image generation pipeline. */
@@ -14,12 +21,34 @@ export const CANVAS_IMAGE_JOB_TYPES = [
 
 export const ALL_IMAGE_JOB_TYPES = [
   ...IMAGE_JOB_TYPES,
+  ...IMAGE_POST_JOB_TYPES,
   ...CANVAS_IMAGE_JOB_TYPES,
 ] as const;
 
 export type ImageJobType = (typeof IMAGE_JOB_TYPES)[number];
 export type CanvasImageJobType = (typeof CANVAS_IMAGE_JOB_TYPES)[number];
 export type AllImageJobType = (typeof ALL_IMAGE_JOB_TYPES)[number];
+
+export const IMAGE_EDIT_OPS = ["inpaint", "outpaint", "remove_bg", "replace_bg"] as const;
+export type ImageEditOp = (typeof IMAGE_EDIT_OPS)[number];
+
+/** 平台合规预检支持的平台（check_compliance / image.compliance）。 */
+export const COMPLIANCE_PLATFORMS = ["amazon", "tiktok_shop", "shopee", "shopify"] as const;
+export type CompliancePlatform = (typeof COMPLIANCE_PLATFORMS)[number];
+
+/** A rendered text layer burned onto an existing image (image.text). */
+export interface ImageTextLayer {
+  text: string;
+  /** 0-1 normalized top-left anchor. */
+  x: number;
+  y: number;
+  font_size: number;
+  /** CSS-style hex color, e.g. "#ffffff". */
+  color: string;
+  align?: "left" | "center" | "right";
+  /** Registered font name; falls back to the worker's CJK default. */
+  font?: string;
+}
 
 export const JOB_STATUSES = [
   "queued",
@@ -61,8 +90,20 @@ export interface ImageJobCredential {
 
 export interface ImageJobInput {
   prompt: string;
-  size: ImageSize;
+  /** 画布电商比例可产出 IMAGE_SIZES 之外的合法 WxH（如 1024x1536）。 */
+  size: string;
   reference_storage_keys?: string[];
+  /** 输入图（image.edit / image.text / image.compliance 的操作对象）。 */
+  source_storage_key?: string;
+  /** image.edit 的局部重绘遮罩（与 source 同尺寸的 PNG alpha 遮罩）。 */
+  mask_storage_key?: string;
+  edit_op?: ImageEditOp;
+  /** seed_lock：固定随机种子保证批量变体的商品一致性。 */
+  seed?: number;
+  /** image.text：压在 source 上的文字图层。 */
+  text_layers?: ImageTextLayer[];
+  /** image.compliance：要校验的平台 id（amazon/tiktok_shop/shopee/shopify）。 */
+  compliance_platforms?: string[];
 }
 
 export interface ImageJobCallback {
@@ -80,6 +121,10 @@ export interface ImageJobPayload {
   callback: ImageJobCallback;
   cache_key: string;
   timeout_ms: number;
+  /** Python worker 侧已尝试次数；首次执行缺省 0。 */
+  attempt?: number;
+  /** W3C traceparent（TS 决策层 → Python worker 观测关联）。 */
+  traceparent?: string;
 }
 
 export interface ImageJobOutput {

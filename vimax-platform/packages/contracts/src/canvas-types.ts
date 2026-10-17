@@ -1,5 +1,7 @@
 // ── Canvas Node Types ──────────────────────────────────────────────
 
+import type { ImageTextLayer } from "./job-types.js";
+
 export const CANVAS_NODE_TYPES = [
   "script",
   "character",
@@ -157,6 +159,48 @@ export interface ImageNodeData {
   aspectRatio?: string;
   /** Selected e-commerce scene preset id (see ECOMMERCE_SCENES). */
   scene?: string;
+  // ── 编辑/后处理（image.edit / image.text / image.compliance）──
+  /** 编辑操作：inpaint/outpaint 走模型（可带 mask），remove_bg/replace_bg 见 editOp。 */
+  editOp?: "inpaint" | "outpaint" | "remove_bg" | "replace_bg";
+  /** 编辑/压字/合规检查的输入图资产。 */
+  sourceAssetId?: string;
+  /** inpaint 遮罩资产（PNG，与 source 同尺寸）。 */
+  maskAssetId?: string;
+  /** 压在 sourceAssetId 上的文字图层（burn_text）。 */
+  textLayers?: ImageTextLayer[];
+  /** 平台合规预检目标（check_compliance）。 */
+  compliancePlatforms?: string[];
+  /** 合规检查结果（image.compliance 完成后回填，每平台一份）。 */
+  complianceReports?: ComplianceReport[];
+  /** 自动评估结果（evaluate 流水线回填）。 */
+  evaluation?: ImageEvaluation;
+  /** 自动 refine 已尝试次数（上限 1）。 */
+  evaluateAttempt?: number;
+}
+
+/** 平台合规检查报告（worker compliance.py 产出）。 */
+export interface ComplianceReport {
+  platform: string;
+  passed: boolean;
+  checks: Array<{
+    id: string;
+    label: string;
+    passed: boolean;
+    detail?: string;
+    manual_review?: boolean;
+  }>;
+}
+
+/** 生图自动评估分（evaluate 流水线回填，四维 0-1）。 */
+export interface ImageEvaluation {
+  overall: number;
+  dimensions: {
+    fidelity: number;
+    text: number;
+    aesthetics: number;
+    compliance: number;
+  };
+  critique?: string;
 }
 
 /**

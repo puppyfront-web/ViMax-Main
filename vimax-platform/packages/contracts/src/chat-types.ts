@@ -113,6 +113,19 @@ export type ServerWsMessage =
   // Nodes were deleted server-side (e.g. pipeline regeneration) — every
   // viewer must drop them (and their edges) from the local graph.
   | { type: "canvas.nodes_removed"; canvasId: string; nodeIds: string[] }
+  // Browser sandbox execution request (run_code tool → T3 Pyodide runner).
+  // The requesting client fetches inputs from its local asset vault,
+  // executes the script in Pyodide, uploads outputs and reports back via
+  // the sandbox.runs.complete tRPC mutation.
+  | {
+      type: "sandbox.run_requested";
+      canvasId: string;
+      runId: string;
+      name: string;
+      language: string;
+      code: string;
+      inputAssetIds: string[];
+    }
   // Realtime presence — the server relays the sender's pointer/selection to
   // everyone else in the canvas room (never echoed back to the sender).
   | {

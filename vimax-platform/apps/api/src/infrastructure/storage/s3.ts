@@ -62,6 +62,19 @@ export async function headObject(storageKey: string) {
   );
 }
 
+/** Read an object's full bytes (asset analysis needs the payload in-process). */
+export async function getObjectBuffer(storageKey: string): Promise<Buffer> {
+  const response = await getS3Client().send(
+    new GetObjectCommand({
+      Bucket: getBucket(),
+      Key: storageKey,
+    }),
+  );
+  const bytes = await response.Body?.transformToByteArray();
+  if (!bytes) throw new Error(`Empty object: ${storageKey}`);
+  return Buffer.from(bytes);
+}
+
 /** Remove an object from the bucket. Missing objects are treated as deleted. */
 export async function deleteObject(storageKey: string): Promise<void> {
   await getS3Client().send(

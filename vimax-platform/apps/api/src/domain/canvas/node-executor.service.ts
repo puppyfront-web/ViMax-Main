@@ -30,6 +30,7 @@ import {
   enqueueVideoJob,
 } from "../../infrastructure/queue/producer.js";
 import { buildStorageKey, getBucket } from "../../infrastructure/storage/s3.js";
+import { currentTrace, currentTraceparent } from "../../infrastructure/observability/trace.js";
 import {
   buildImageCacheKey,
   collectReferenceSha256s,
@@ -56,6 +57,7 @@ import {
 } from "./shot-decompose.js";
 import { buildConcatCacheKey, buildVideoCacheKey } from "./cache-keys.js";
 import { broadcastNodeStatus } from "./node-status.js";
+import { recordFeedback } from "../feedback/feedback.service.js";
 import { MAX_VARIANTS } from "./variations.js";
 import {
   buildStoryboardUserRequirement,
@@ -351,6 +353,11 @@ export async function runVariants(
 
   const n = Math.max(1, Math.min(count, MAX_VARIANTS));
   const jobIds: string[] = [];
+  const parentTrace = currentTraceparent();
+  const variantsSpan = currentTrace()?.recorder.startSpan("image.enqueue_variants", {
+    node_id: nodeId,
+    count: n,
+  });
   for (let i = 0; i < n; i++) {
     const jobId = randomUUID();
     // Distinct cache key per variant so the dedup layer keeps them apart.
@@ -403,9 +410,11 @@ export async function runVariants(
       },
       cache_key: cacheKey,
       timeout_ms: 120_000,
+      ...(parentTrace ? { traceparent: parentTrace } : {}),
     });
     jobIds.push(jobId);
   }
+  variantsSpan?.end();
 
   return { jobIds };
 }
@@ -421,6 +430,8 @@ export async function pickVariant(
 ): Promise<void> {
   await setNodeStatus(canvasId, nodeId, "done", assetId);
   broadcastNodeStatus(canvasId, nodeId, "done", assetId);
+  // Implicit positive feedback — the user chose this variant over the rest.
+  void recordFeedback({ canvasId, nodeId, assetId, signal: "pick" }).catch(() => {});
   await markDownstreamDirty(canvasId, nodeId);
   await runReadyDirtyChildren(canvasId, nodeId);
 }
@@ -601,11 +612,98 @@ export async function resolveVideoModel(modelId?: string): Promise<{
   };
 }
 
+/** Resolve one asset's storage key (edit/text/compliance operate on it). */
+async function getAssetStorageKey(assetId: string): Promise<string> {
+  const db = getDb();
+  const [asset] = await db
+    .select({ storageKey: assets.storageKey, width: assets.width, height: assets.height })
+    .from(assets)
+    .where(eq(assets.id, assetId))
+    .limit(1);
+  if (!asset) throw new Error("input.asset_not_found");
+  return asset.storageKey;
+}
+
+export async function getAssetSize(assetId: string): Promise<string> {
+  const db = getDb();
+  const [asset] = await db
+    .select({ width: assets.width, height: assets.height })
+    .from(assets)
+    .where(eq(assets.id, assetId))
+    .limit(1);
+  if (asset?.width && asset?.height) return `${asset.width}x${asset.height}`;
+  return "1024x1024";
+}
+
+/** Shared tail of every image-pipeline job: dedup guard, job row, queue. */
+async function dispatchImageJob(
+  node: typeof canvasNodes.$inferSelect,
+  args: {
+    jobType: ImageJobPayload["job_type"];
+    payload: Omit<ImageJobPayload, "callback" | "traceparent">;
+    inputSnapshot: Record<string, unknown>;
+    cacheKey: string;
+  },
+): Promise<NodeRunOutput> {
+  const jobId = args.payload.job_id;
+  const queueName = "q.image.std";
+  const parentTrace = currentTraceparent();
+
+  const payload: ImageJobPayload = {
+    ...args.payload,
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("generated", jobId),
+    },
+    ...(parentTrace ? { traceparent: parentTrace } : {}),
+  };
+
+  const db = getDb();
+  await assertNoInFlightNodeJob(node.canvasId, node.id);
+  await db.insert(jobs).values({
+    id: jobId,
+    jobType: args.jobType,
+    queueName,
+    bullmqJobId: jobId,
+    inputSnapshot: args.inputSnapshot,
+    cacheKey: args.cacheKey,
+    status: "queued",
+    progress: 0,
+  });
+
+  await db.insert(jobEvents).values({
+    jobId,
+    eventType: "queued",
+    payload: { message: "Job queued via canvas node", node_id: node.id },
+  });
+
+  const enqueueSpan = currentTrace()?.recorder.startSpan("image.enqueue", {
+    job_id: jobId,
+    job_type: args.jobType,
+    size: args.payload.input.size,
+  });
+  await enqueueImageJob(payload);
+  enqueueSpan?.end();
+
+  return {
+    job_id: jobId,
+    node_id: node.id,
+    job_type: args.jobType,
+    queue_name: queueName,
+  };
+}
+
 async function runImageNode(
   node: typeof canvasNodes.$inferSelect,
   upstreamAssetIds: string[],
 ): Promise<NodeRunOutput> {
   const data = node.data as ImageNodeData;
+
+  // ── Post-processing / analysis jobs operate on an existing image ──
+  if (data.compliancePlatforms?.length) return runImageComplianceJob(node, data);
+  if (data.textLayers?.length) return runImageTextJob(node, data);
+  if (data.editOp) return runImageEditJob(node, data, upstreamAssetIds);
 
   const model = await resolveImageModel(data.modelId);
   const modelId = data.modelId ?? model.id;
@@ -632,8 +730,9 @@ async function runImageNode(
     mode,
     prompt: effectivePrompt,
     model_id: modelId,
-    size: data.size as ImageSize,
+    size: data.size,
     reference_sha256s: sha256s,
+    ...(data.seed !== undefined ? { seed: data.seed } : {}),
   });
 
   // Cache hit check
@@ -643,18 +742,16 @@ async function runImageNode(
   const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) throw new Error("provider.invalid_key");
 
-  const jobId = randomUUID();
-  const jobType = mode === "t2i" ? "image.t2i" : "image.i2i";
-  const queueName = "q.image.std";
-
   // Store canvas context in input_snapshot so the completion handler
-  // can update the node status and propagate dirty flags.
+  // can update the node status and propagate dirty flags. E-commerce
+  // kinds opt into the evaluate flywheel (score + at most one refine).
   const inputSnapshot = {
     mode,
     prompt: effectivePrompt,
     model_id: modelId,
     size: data.size,
     reference_asset_ids: refAssetIds,
+    ...(["product", "model", "ad"].includes(data.kind ?? "") ? { _evaluate: true } : {}),
     // Canvas context — read by job-event.service on completion
     _canvas: {
       canvas_id: node.canvasId,
@@ -662,57 +759,225 @@ async function runImageNode(
     },
   };
 
-  const payload: ImageJobPayload = {
-    job_id: jobId,
-    job_type: jobType,
-    model_id: modelId,
-    credential: {
-      class_path: model.class_path,
-      api_key: apiKey,
-      base_url: model.base_url,
-      model: model.model,
-    },
-    input: {
-      prompt: effectivePrompt,
-      size: data.size as ImageJobPayload["input"]["size"],
-      reference_storage_keys: [], // resolved by cache service
-    },
-    callback: {
-      event_channel: jobEventChannel(jobId),
-      upload_bucket: getBucket(),
-      upload_prefix: buildStorageKey("generated", jobId),
-    },
-    cache_key: cacheKey,
-    timeout_ms: 120_000,
-  };
-
-  const db = getDb();
-  await assertNoInFlightNodeJob(node.canvasId, node.id);
-  await db.insert(jobs).values({
-    id: jobId,
-    jobType,
-    queueName,
-    bullmqJobId: jobId,
-    inputSnapshot,
+  return dispatchImageJob(node, {
+    jobType: mode === "t2i" ? "image.t2i" : "image.i2i",
     cacheKey,
-    status: "queued",
-    progress: 0,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: mode === "t2i" ? "image.t2i" : "image.i2i",
+      model_id: modelId,
+      credential: {
+        class_path: model.class_path,
+        api_key: apiKey,
+        base_url: model.base_url,
+        model: model.model,
+      },
+      input: {
+        prompt: effectivePrompt,
+        size: data.size,
+        reference_storage_keys: [], // resolved by cache service
+        ...(data.seed !== undefined ? { seed: data.seed } : {}),
+      },
+      cache_key: cacheKey,
+      timeout_ms: 120_000,
+    },
+  });
+}
+
+// ── image.edit / image.text / image.compliance（P1 电商后处理） ──────
+
+/** Resolve the operation source: explicit sourceAssetId, else the first
+ * upstream/reference asset. Edit-style ops need something to act on. */
+async function resolveSourceAssetId(
+  data: ImageNodeData,
+  upstreamAssetIds: string[],
+): Promise<string> {
+  const source = data.sourceAssetId
+    ?? upstreamAssetIds[0]
+    ?? data.referenceAssetIds?.[0];
+  if (!source) throw new Error("input.source_asset_required");
+  return source;
+}
+
+async function runImageEditJob(
+  node: typeof canvasNodes.$inferSelect,
+  data: ImageNodeData,
+  upstreamAssetIds: string[],
+): Promise<NodeRunOutput> {
+  const model = await resolveImageModel(data.modelId);
+  const modelId = data.modelId ?? model.id;
+  if (!model.supports_reference) throw new Error("input.unsupported_model");
+
+  const sourceId = await resolveSourceAssetId(data, upstreamAssetIds);
+  const sourceKey = await getAssetStorageKey(sourceId);
+  const maskKey = data.maskAssetId ? await getAssetStorageKey(data.maskAssetId) : undefined;
+
+  const [{ sha256s }, sourceSha] = await Promise.all([
+    collectReferenceSha256s(data.referenceAssetIds ?? []),
+    collectReferenceSha256s([sourceId]),
+  ]);
+  const maskSha = data.maskAssetId
+    ? (await collectReferenceSha256s([data.maskAssetId])).sha256s[0]
+    : undefined;
+
+  const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
+  const cacheKey = buildImageCacheKey({
+    mode: "i2i",
+    prompt: effectivePrompt,
+    model_id: modelId,
+    size: data.size,
+    reference_sha256s: sha256s,
+    edit_op: data.editOp,
+    source_sha256: sourceSha.sha256s[0],
+    ...(maskSha ? { mask_sha256: maskSha } : {}),
+    ...(data.seed !== undefined ? { seed: data.seed } : {}),
   });
 
-  await db.insert(jobEvents).values({
-    jobId,
-    eventType: "queued",
-    payload: { message: "Job queued via canvas node", node_id: node.id },
-  });
+  const cached = await findCachedJob(cacheKey);
+  if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
-  await enqueueImageJob(payload);
+  const apiKey = model.api_key ?? config.arkApiKey();
+  if (!apiKey) throw new Error("provider.invalid_key");
 
-  return {
-    job_id: jobId,
-    node_id: node.id,
-    job_type: jobType,
-    queue_name: queueName,
+  const inputSnapshot = {
+    mode: "i2i",
+    edit_op: data.editOp,
+    prompt: effectivePrompt,
+    model_id: modelId,
+    size: data.size,
+    source_asset_id: sourceId,
+    reference_asset_ids: data.referenceAssetIds ?? [],
+    _canvas: { canvas_id: node.canvasId, node_id: node.id },
   };
+
+  return dispatchImageJob(node, {
+    jobType: "image.edit",
+    cacheKey,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: "image.edit",
+      model_id: modelId,
+      credential: {
+        class_path: model.class_path,
+        api_key: apiKey,
+        base_url: model.base_url,
+        model: model.model,
+      },
+      input: {
+        prompt: effectivePrompt,
+        size: data.size,
+        reference_storage_keys: [],
+        source_storage_key: sourceKey,
+        edit_op: data.editOp,
+        ...(maskKey ? { mask_storage_key: maskKey } : {}),
+        ...(data.seed !== undefined ? { seed: data.seed } : {}),
+      },
+      cache_key: cacheKey,
+      timeout_ms: 120_000,
+    },
+  });
+}
+
+async function runImageTextJob(
+  node: typeof canvasNodes.$inferSelect,
+  data: ImageNodeData,
+): Promise<NodeRunOutput> {
+  const sourceId = await resolveSourceAssetId(data, []);
+  const sourceKey = await getAssetStorageKey(sourceId);
+  const sourceSha = (await collectReferenceSha256s([sourceId])).sha256s[0];
+  const size = await getAssetSize(sourceId);
+
+  const cacheKey = buildImageCacheKey({
+    mode: "post",
+    prompt: "",
+    model_id: "pil",
+    size,
+    reference_sha256s: [],
+    source_sha256: sourceSha,
+    text_layers: data.textLayers,
+  });
+
+  const cached = await findCachedJob(cacheKey);
+  if (cached?.outputAssetId) return applyCacheHit(node, cached);
+
+  const inputSnapshot = {
+    mode: "post.text",
+    size,
+    source_asset_id: sourceId,
+    _canvas: { canvas_id: node.canvasId, node_id: node.id },
+  };
+
+  return dispatchImageJob(node, {
+    jobType: "image.text",
+    cacheKey,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: "image.text",
+      model_id: "pil",
+      credential: { class_path: "", api_key: "" },
+      input: {
+        prompt: "",
+        size,
+        source_storage_key: sourceKey,
+        text_layers: data.textLayers,
+      },
+      cache_key: cacheKey,
+      timeout_ms: 60_000,
+    },
+  });
+}
+
+async function runImageComplianceJob(
+  node: typeof canvasNodes.$inferSelect,
+  data: ImageNodeData,
+): Promise<NodeRunOutput> {
+  const sourceId = await resolveSourceAssetId(data, []);
+  const sourceKey = await getAssetStorageKey(sourceId);
+  const sourceSha = (await collectReferenceSha256s([sourceId])).sha256s[0];
+  const size = await getAssetSize(sourceId);
+
+  const cacheKey = buildImageCacheKey({
+    mode: "post",
+    prompt: "",
+    model_id: "compliance",
+    size,
+    reference_sha256s: [],
+    source_sha256: sourceSha,
+    compliance_platforms: data.compliancePlatforms,
+  });
+
+  const cached = await findCachedJob(cacheKey);
+  if (cached?.outputAssetId) return applyCacheHit(node, cached);
+
+  const inputSnapshot = {
+    mode: "post.compliance",
+    size,
+    source_asset_id: sourceId,
+    _canvas: { canvas_id: node.canvasId, node_id: node.id },
+  };
+
+  return dispatchImageJob(node, {
+    jobType: "image.compliance",
+    cacheKey,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: "image.compliance",
+      model_id: "compliance",
+      credential: { class_path: "", api_key: "" },
+      input: {
+        prompt: "",
+        size,
+        source_storage_key: sourceKey,
+        compliance_platforms: data.compliancePlatforms,
+      },
+      cache_key: cacheKey,
+      timeout_ms: 60_000,
+    },
+  });
 }
 
 // ── Character node executor (MVP: generates front/side/back portraits) ──

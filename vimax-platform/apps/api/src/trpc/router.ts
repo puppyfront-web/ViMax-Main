@@ -9,6 +9,10 @@ import { workbenchRouter } from "./routers/workbench.js";
 import { novelRouter } from "./routers/novel.js";
 import { authRouter } from "./routers/auth.js";
 import { modelRouter } from "./routers/model.js";
+import { ecomRouter } from "./routers/ecom.js";
+import { knowledgeRouter } from "./routers/knowledge.js";
+import { sandboxRouter } from "./routers/sandbox.js";
+import { feedbackRouter } from "./routers/feedback.js";
 import { router, publicProcedure } from "./trpc.js";
 
 export const appRouter = router({
@@ -81,6 +85,10 @@ export const appRouter = router({
   skill: skillRouter,
   workbench: workbenchRouter,
   novel: novelRouter,
+  ecom: ecomRouter,
+  knowledge: knowledgeRouter,
+  sandbox: sandboxRouter,
+  feedback: feedbackRouter,
 });
 
 export type AppRouter = typeof appRouter;

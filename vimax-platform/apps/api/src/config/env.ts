@@ -27,4 +27,10 @@ export const config = {
   // 本地化存储策略：未认领 generated 资产的远端二进制保留时长（小时），
   // 0 = 关闭清扫。默认 24h：给客户端足够的认领窗口。
   assetSweepTtlHours: () => Number(getEnvOptional("ASSET_SWEEP_TTL_HOURS", "24")),
+  // 观测导出（Langfuse OTLP）。三项齐备才启用导出，缺省仅透传 traceparent。
+  observability: {
+    langfuseHost: () => process.env.LANGFUSE_HOST,
+    langfusePublicKey: () => process.env.LANGFUSE_PUBLIC_KEY,
+    langfuseSecretKey: () => process.env.LANGFUSE_SECRET_KEY,
+  },
 };

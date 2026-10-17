@@ -361,9 +361,26 @@ export async function applyAgentResult(
       return;
     }
 
+    case "image.compliance": {
+      const reports = normalizeComplianceReports(result.reports);
+      await updateNodeDataField(canvasId, nodeId, "complianceReports", reports);
+      await markDone(canvasId, nodeId, jobId);
+      return;
+    }
+
     default:
       return;
   }
+}
+
+/** Worker compliance reports land as a JSON array — keep only well-formed
+ * entries so a partial worker failure can't poison the node data. */
+export function normalizeComplianceReports(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      !!item && typeof item === "object" && typeof (item as { platform?: unknown }).platform === "string",
+  );
 }
 
 /** Agent bridge job types whose completed output carries a JSON `result`. */

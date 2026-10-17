@@ -76,6 +76,24 @@ test("flush yields nothing when no tool call name was ever received", () => {
   assert.equal(acc.flush().length, 0);
 });
 
+test("flush carries the provider tool-call id for the loop to echo back", () => {
+  const acc = new OpenAiStreamAccumulator();
+  acc.feedChoice({
+    delta: {
+      tool_calls: [{ index: 0, id: "call_abc", function: { name: "generate_image", arguments: "{}" } }],
+    },
+  });
+  assert.equal(acc.flush()[0]!.toolCallId, "call_abc");
+});
+
+test("flush omits toolCallId when the provider never sent one", () => {
+  const acc = new OpenAiStreamAccumulator();
+  acc.feedChoice({
+    delta: { tool_calls: [{ index: 0, function: { name: "f", arguments: "{}" } }] },
+  });
+  assert.equal(acc.flush()[0]!.toolCallId, undefined);
+});
+
 test("flush is idempotent (clears pending)", () => {
   const acc = new OpenAiStreamAccumulator();
   acc.feedChoice({ delta: { tool_calls: [{ index: 0, function: { name: "f", arguments: "{}" } }] } });

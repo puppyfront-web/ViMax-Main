@@ -21,11 +21,19 @@ export function stableStringify(value: unknown): string {
 }
 
 export function buildImageCacheKey(input: {
-  mode: ImageGenerateInput["mode"];
+  mode: string;
   prompt: string;
   model_id: string;
-  size: ImageGenerateInput["size"];
+  size: string;
   reference_sha256s: string[];
+  /** seed_lock — same content with a different seed must not collapse. */
+  seed?: number;
+  edit_op?: string;
+  /** 操作对象（edit/text/compliance）与遮罩的内容指纹。 */
+  source_sha256?: string;
+  mask_sha256?: string;
+  text_layers?: unknown;
+  compliance_platforms?: string[];
 }): string {
   const canonical = {
     mode: input.mode,
@@ -33,6 +41,12 @@ export function buildImageCacheKey(input: {
     model_id: input.model_id,
     size: input.size,
     refs: [...input.reference_sha256s].sort(),
+    ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    ...(input.edit_op ? { edit_op: input.edit_op } : {}),
+    ...(input.source_sha256 ? { source: input.source_sha256 } : {}),
+    ...(input.mask_sha256 ? { mask: input.mask_sha256 } : {}),
+    ...(input.text_layers ? { text_layers: input.text_layers } : {}),
+    ...(input.compliance_platforms ? { platforms: input.compliance_platforms } : {}),
   };
   return createHash("sha256").update(stableStringify(canonical)).digest("hex");
 }

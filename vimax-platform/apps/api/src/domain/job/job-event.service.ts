@@ -12,6 +12,7 @@ import { appendVariant, isVariantJob, type VariantEntry } from "../canvas/variat
 import { inferAssetKind, shouldCreateAsset } from "../asset/asset-utils.js";
 import { persistStoryboardSpawn } from "../canvas/storyboard-spawn.js";
 import { applyAgentResult } from "../canvas/agent-result.js";
+import { maybeEvaluateNode } from "../evaluate/evaluate.service.js";
 
 function mapEventType(type: JobEventValidated["type"]) {
   switch (type) {
@@ -258,6 +259,11 @@ export async function handleJobEvent(raw: string): Promise<void> {
 
         // ── Reactive cascade: re-run dirty descendants now ready ──
         await runReadyDirtyChildren(canvasMeta.canvas_id, canvasMeta.node_id);
+
+        // ── Evaluate flywheel: score + at most one auto-refine (async, non-blocking) ──
+        if (snapshot?._evaluate === true && assetId) {
+          void maybeEvaluateNode(canvasMeta.canvas_id, canvasMeta.node_id, parsed.job_id, assetId);
+        }
         }
       } catch (err) {
         console.error(

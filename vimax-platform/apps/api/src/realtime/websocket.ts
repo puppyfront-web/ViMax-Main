@@ -215,11 +215,21 @@ import {
   users,
   type AgentMessageRow,
 } from "../infrastructure/db/schema.js";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { broadcastToConversation } from "./connection-manager.js";
 import { runDecisionAgent, executeToolCall, buildCanvasContext } from "../domain/agent/decision-layer.js";
 import { cancelAutoPipeline } from "../domain/canvas/pipeline-orchestrator.js";
-import type { AIStreamChunk } from "../domain/agent/ai-service.js";
+import type { AIStreamChunk, AIMessage } from "../domain/agent/ai-service.js";
+import {
+  MAX_AGENT_STEPS,
+  AGENT_TOKEN_BUDGET,
+  HISTORY_WINDOW,
+  canonicalToolKey,
+  isRepeatedFailure,
+  toolResultMessage,
+} from "../domain/agent/agent-loop.js";
+import { startTrace, runWithTrace } from "../infrastructure/observability/trace.js";
+import { summarizeConversation, extractProfileSignals } from "../domain/memory/memory.service.js";
 
 function toAgentMessage(message: AgentMessageRow): AgentMessage {
   return {
@@ -231,6 +241,35 @@ function toAgentMessage(message: AgentMessageRow): AgentMessage {
     status: message.status,
     createdAt: message.createdAt.toISOString(),
   };
+}
+
+/**
+ * Replay the recent conversation as model messages (oldest first),
+ * excluding the just-persisted user message and the assistant placeholder.
+ */
+async function loadRecentHistory(
+  conversationId: string,
+  limit: number,
+  excludeIds: number[],
+): Promise<AIMessage[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: agentMessages.id,
+      role: agentMessages.role,
+      content: agentMessages.content,
+    })
+    .from(agentMessages)
+    .where(eq(agentMessages.conversationId, conversationId))
+    .orderBy(desc(agentMessages.createdAt))
+    .limit(limit + excludeIds.length + 4);
+
+  return rows
+    .filter((r) => !excludeIds.includes(r.id) && r.content.trim())
+    .filter((r) => r.role === "user" || r.role === "assistant")
+    .slice(0, limit)
+    .reverse()
+    .map((r) => ({ role: r.role as "user" | "assistant", content: r.content }));
 }
 
 /**
@@ -339,10 +378,10 @@ async function handleChatSend(
       return;
     }
 
-    // Real agent processing with streaming + multi-turn tool loop.
-    // A single user message drives a full workflow (script → characters →
-    // storyboard → shots …): each turn the agent re-reads the canvas and
-    // emits the next tool calls until it stops or we hit the turn cap.
+    // Real agent processing: a true tool loop. The model sees the whole
+    // conversation — including each tool result fed back as a message — and
+    // decides the next action itself until done, or a budget trips
+    // (step cap / token cap / same-failed-call twice).
     let fullResponse = "";
     const toolCalls: Array<{ name: string; args: Record<string, unknown>; status: "completed" | "failed" }> = [];
 
@@ -395,84 +434,144 @@ async function handleChatSend(
       }
     };
 
-    const MAX_AGENT_TURNS = 6;
     const abortController = new AbortController();
     activeChatAbort.set(conversationId, abortController);
+    const userId = getUserId(ws) ?? undefined;
+    const trace = startTrace("chat.agent_loop");
     try {
-      for (let turn = 0; turn < MAX_AGENT_TURNS; turn++) {
-        if (abortController.signal.aborted) break;
-        const turnPrompt = turn === 0
-          ? content
-          : "继续完成创作工作流。先查看当前画布已有节点（见上下文），按需补全，每轮务必至少推进一步：\n" +
-            "- 若已有剧本但无角色 → 调用 extract_characters\n" +
-            "- 若已有剧本但无分镜 → 调用 generate_storyboard（拆分镜头，含景别与运镜）\n" +
-            "- 若分镜已有但无镜头节点 → 调用 create_canvas_nodes 创建 shot 节点（data 用对象，如 {\"ffDesc\": \"画面描述\"}）\n" +
-            "- 若镜头已有但无图片节点 → create_canvas_nodes 创建 image 节点（data: {\"prompt\": \"画面描述\", \"size\": \"1024x1024\", \"negativePrompt\": \"low quality, watermark\"}，negativePrompt 为不希望出现的元素），然后对每个 image 节点调用 run_node 生成图片\n" +
-            "- 若图片已有但无视频节点 → create_canvas_nodes 创建 video 节点（data: {\"motionPreset\": \"zoom_in\", \"durationSec\": 4, \"negativePrompt\": \"low quality, watermark\"}），然后对每个 video 节点调用 run_node 生成视频\n" +
-            "- 若剧本、角色、分镜、镜头、图片、视频都已齐备 → 只回复「完成」并不再调用任何工具。";
+      await runWithTrace(trace, async () => {
+        const history = await loadRecentHistory(conversationId, HISTORY_WINDOW, [
+          userMsg.id,
+          assistantMsg.id,
+        ]);
+        const messages: AIMessage[] = [...history, { role: "user", content }];
 
-        const result = await runDecisionAgent(canvasId, turnPrompt, onChunk, modelId, abortController.signal);
-        if (abortController.signal.aborted) break;
-        if (result.text.trim()) {
-          fullResponse += (fullResponse ? "\n\n" : "") + result.text.trim();
-        }
-
-        // Re-read the canvas each turn so new nodes are positioned correctly
-        // and the agent's next decision reflects the latest state.
-        const canvasCtx = await buildCanvasContext(canvasId);
+        // Node counts seed tool-call positioning; executeToolCall keeps
+        // them current as nodes are added.
         const nodeTypeCounts: Record<string, number> = {};
+        const failureCounts = new Map<string, number>();
+        const canvasCtx = await buildCanvasContext(canvasId);
         if (canvasCtx) {
           for (const n of canvasCtx.nodes) {
             nodeTypeCounts[n.type] = (nodeTypeCounts[n.type] ?? 0) + 1;
           }
         }
 
-        if (result.toolCalls.length === 0) break; // agent is done
-
-        for (const tc of result.toolCalls) {
+        let tokensUsed = 0;
+        for (let step = 0; step < MAX_AGENT_STEPS; step++) {
           if (abortController.signal.aborted) break;
-          const execResult = await executeToolCall(
-            tc.name, tc.args, canvasId,
-            { onCanvasMutation, nodeTypeCounts },
-          );
 
-          broadcastToConversation(conversationId, {
-            type: "chat.tool_result",
-            conversationId,
-            tool: {
-              id: `tc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-              name: tc.name, args: tc.args,
-              status: execResult.success ? "completed" : "failed",
-              result: execResult.result,
-            },
+          const stepSpan = trace.recorder.startSpan("agent.step");
+          const result = await runDecisionAgent({
+            canvasId,
+            messages,
+            onChunk,
+            modelId,
+            userId,
+            abortSignal: abortController.signal,
+          });
+          stepSpan.end({
+            tool_calls: result.toolCalls.length,
+            text_chars: result.text.length,
+          });
+          if (abortController.signal.aborted) break;
+
+          if (result.text.trim()) {
+            fullResponse += (fullResponse ? "\n\n" : "") + result.text.trim();
+          }
+          tokensUsed += (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0);
+
+          // Record the assistant turn (with its tool requests) so the next
+          // turn's tool results have something to answer to.
+          messages.push({
+            role: "assistant",
+            content: result.text,
+            ...(result.toolCalls.length > 0
+              ? {
+                  tool_calls: result.toolCalls.map((tc) => ({
+                    id: tc.id,
+                    type: "function" as const,
+                    function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+                  })),
+                }
+              : {}),
           });
 
-          // Canvas mutations are already broadcast inside executeToolCall via
-          // the onCanvasMutation callback — rebroadcasting here would deliver
-          // each nodes.add twice and duplicate nodes on the client.
+          if (result.toolCalls.length === 0) break; // agent is done
+          if (tokensUsed > AGENT_TOKEN_BUDGET) {
+            fullResponse += "\n\n（已达本次对话的执行预算，已停止继续调用工具。）";
+            break;
+          }
 
-          fullResponse += `\n\n${tc.name}: ${execResult.message}`;
-          toolCalls.push({ name: tc.name, args: tc.args, status: execResult.success ? "completed" : "failed" });
+          let circuitBroken = false;
+          for (const [index, tc] of result.toolCalls.entries()) {
+            if (abortController.signal.aborted) break;
 
-          if (execResult.success && execResult.canvasMutation?.type === "nodes.add") {
-            for (const n of execResult.canvasMutation.nodes) {
-              nodeTypeCounts[n.type] = (nodeTypeCounts[n.type] ?? 0) + 1;
+            const toolSpan = trace.recorder.startSpan(`tool.${tc.name}`, { tool: tc.name });
+            const execResult = await executeToolCall(
+              tc.name, tc.args, canvasId,
+              { onCanvasMutation, nodeTypeCounts, userId },
+            );
+            toolSpan.end({ success: execResult.success });
+
+            if (execResult.sandboxRun) {
+              broadcastToRoom(canvasId, {
+                type: "sandbox.run_requested",
+                canvasId,
+                ...execResult.sandboxRun,
+              });
+            }
+
+            broadcastToConversation(conversationId, {
+              type: "chat.tool_result",
+              conversationId,
+              tool: {
+                id: `tc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                name: tc.name, args: tc.args,
+                status: execResult.success ? "completed" : "failed",
+                result: execResult.result,
+              },
+            });
+
+            // Canvas mutations are already broadcast inside executeToolCall via
+            // the onCanvasMutation callback — rebroadcasting here would deliver
+            // each nodes.add twice and duplicate nodes on the client.
+            fullResponse += `\n\n${tc.name}: ${execResult.message}`;
+            toolCalls.push({ name: tc.name, args: tc.args, status: execResult.success ? "completed" : "failed" });
+
+            if (execResult.success && execResult.canvasMutation?.type === "nodes.add") {
+              for (const n of execResult.canvasMutation.nodes) {
+                nodeTypeCounts[n.type] = (nodeTypeCounts[n.type] ?? 0) + 1;
+              }
+            }
+
+            // Feed the outcome back so the model decides based on facts.
+            messages.push(toolResultMessage(tc.id || `call_${step}_${index}`, execResult));
+
+            if (
+              !execResult.success &&
+              isRepeatedFailure(failureCounts, canonicalToolKey(tc.name, tc.args))
+            ) {
+              fullResponse += "\n\n（同一操作连续失败，已停止执行以避免无效循环，请调整要求后重试。）";
+              circuitBroken = true;
+              break;
             }
           }
+          if (circuitBroken) break;
         }
-      }
 
-      // If no text was generated but tool calls were made, add summary
-      if (!fullResponse.trim() && toolCalls.length > 0) {
-        fullResponse = `已执行 ${toolCalls.length} 个操作。`;
-      }
+        // If no text was generated but tool calls were made, add summary
+        if (!fullResponse.trim() && toolCalls.length > 0) {
+          fullResponse = `已执行 ${toolCalls.length} 个操作。`;
+        }
 
-      // If neither text nor tool calls, provide a fallback
-      if (!fullResponse.trim()) {
-        fullResponse = abortController.signal.aborted
-          ? "已停止生成。"
-          : "我已收到您的消息，但暂时无法处理。请确保 AI Provider 已正确配置。";
-      }
+        // If neither text nor tool calls, provide a fallback
+        if (!fullResponse.trim()) {
+          fullResponse = abortController.signal.aborted
+            ? "已停止生成。"
+            : "我已收到您的消息，但暂时无法处理。请确保 AI Provider 已正确配置。";
+        }
+      });
     } catch (agentErr) {
       if (abortController.signal.aborted) {
         fullResponse = "已停止生成。";
@@ -482,6 +581,8 @@ async function handleChatSend(
       }
     } finally {
       activeChatAbort.delete(conversationId);
+      trace.recorder.endRoot({ tool_calls_total: toolCalls.length });
+      await trace.recorder.flush();
     }
 
     // Persist the complete assistant message
@@ -503,6 +604,21 @@ async function handleChatSend(
       conversationId,
       message: toAgentMessage(completedAssistantMessage!),
     });
+
+    // Memory flywheel (L1 episodic + L2 profile): distill this exchange in
+    // the background — never blocks or fails the chat turn.
+    if (userId) {
+      void summarizeConversation(conversationId)
+        .then(() =>
+          extractProfileSignals(userId, [
+            { role: "user", content },
+            { role: "assistant", content: fullResponse },
+          ]),
+        )
+        .catch((err) =>
+          console.error("[ws] Memory extraction failed:", err instanceof Error ? err.message : err),
+        );
+    }
   } catch (err) {
     console.error("[ws] handleChatSend error:", err);
     sendToConnection(ws, {

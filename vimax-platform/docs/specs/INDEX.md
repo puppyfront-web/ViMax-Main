@@ -13,6 +13,7 @@
 | [AUTO-GENERATION-V1.md](./AUTO-GENERATION-V1.md) | ✅ 已确认 | 创意输入自动生成分镜/镜头/成片规格 |
 | [PROMPT-WORDS-RESEARCH.md](./PROMPT-WORDS-RESEARCH.md) | ✅ P0 已实现 | 提示词「联想词 + 限制词」板块调研与接入规格 |
 | [AD-CREATIVE-RESEARCH.md](./AD-CREATIVE-RESEARCH.md) | ✅ P0 已实现 | 广告创意工具调研：竞品格局 + DR 脚本方法论；落地为 `create_ad` 决策工具、广告创意契约层与 3 个广告工作流模板 |
+| [ECOM-IMAGE-RESEARCH.md](./ECOM-IMAGE-RESEARCH.md) | ✅ 评审通过 | 电商生图模块升级调研：竞品 + VOC + 生图 Agent 完整链路（意图/loop/评估/tracing/反馈）+ 分层记忆 + 知识库 + 沙盒，含 P0-P2 路线图（FR-01~15）；P0 实施见 `docs/plans/ECOM-IMAGE-P0-PLAN.md`，P1+P2 实施见 `docs/plans/ECOM-IMAGE-P1P2-PLAN.md` |
 
 ## 里程碑关系
 

@@ -15,6 +15,7 @@ import {
   Square,
 } from "lucide-react";
 import { markPromptSent, wasPromptSent } from "@/lib/prompt-dedup";
+import { useSandboxRunner } from "@/features/sandbox/useSandboxRunner";
 import { useChatMessages } from "./hooks/useChatMessages";
 import { Markdown } from "./Markdown";
 import { ModelSelect } from "@/features/models/ModelSelect";
@@ -97,6 +98,8 @@ export function ChatPanel({
   });
 
   const [inputValue, setInputValue] = useState("");
+  // 订阅 sandbox.run_requested（执行状态在 sandbox runner 内部，暂无 UI 消费）
+  useSandboxRunner(canvasId);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [showConvList, setShowConvList] = useState(false);

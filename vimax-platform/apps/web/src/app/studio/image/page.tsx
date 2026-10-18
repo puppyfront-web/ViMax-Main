@@ -8,6 +8,7 @@ import { SegmentedControl } from "@vimax/ui";
 import { NegativePromptChips, ThesaurusChips } from "@/features/prompt-words/PromptWordChips";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+import { safeJsonParse } from "@/lib/safe-json";
 
 // ---------------------------------------------------------------------------
 // Types (local to this page; contracts are imported via tRPC inference)
@@ -258,11 +259,11 @@ export default function StudioImagePage() {
         setJobStatus("running");
       });
       es.addEventListener("progress", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<Record<string, number>>(e.data, {});
         setJobProgress(d.percent ?? 0);
       });
       es.addEventListener("completed", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<Record<string, unknown>>(e.data, {});
         setJobStatus("succeeded");
         setJobProgress(100);
         es.close();
@@ -275,7 +276,7 @@ export default function StudioImagePage() {
         });
       });
       es.addEventListener("failed", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<{ error_message?: string }>(e.data, {});
         setJobStatus("failed");
         setErrorMessage(d.error_message ?? "Unknown error");
         es.close();

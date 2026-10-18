@@ -200,7 +200,10 @@ async def _run_generation_job(payload: ImageJobPayload, workdir: Path, reporter:
         )
 
     local_path = workdir / f"{payload.job_id}.png"
-    output.save(str(local_path), pnginfo=png_ai_metadata(spec.prompt))
+    # ImageOutput.save(path) 不收 pnginfo —— 先落盘再用 PIL 回写 AI 元数据。
+    output.save(str(local_path))
+    with Image.open(local_path) as img:
+        img.save(local_path, pnginfo=png_ai_metadata(spec.prompt))
 
     await reporter.progress(80, "Uploading result")
     meta = upload_file(

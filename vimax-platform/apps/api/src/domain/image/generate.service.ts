@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ImageGenerateInput, ImageGenerateOutput, ImageJobPayload } from "@vimax/contracts";
-import { composeImagePrompt, getImageModel } from "@vimax/contracts";
+import { composeImagePrompt } from "@vimax/contracts";
 import { eq } from "drizzle-orm";
 import { config } from "../../config/env.js";
 import {
@@ -15,7 +15,10 @@ import { enqueueImageJob } from "../../infrastructure/queue/producer.js";
 import { buildStorageKey, getBucket } from "../../infrastructure/storage/s3.js";
 
 export async function generateImage(input: ImageGenerateInput): Promise<ImageGenerateOutput> {
-  const model = getImageModel(input.model_id);
+  // 与画布节点执行同源：DB 模型优先（studio 列表展示的就是 DB 模型），
+  // 注册表 id 兜底，最终回退租户默认图像模型。
+  const { resolveImageModel } = await import("../canvas/node-executor.service.js");
+  const model = await resolveImageModel(input.model_id);
   if (!model) {
     throw new Error("input.unsupported_model");
   }
@@ -59,7 +62,7 @@ export async function generateImage(input: ImageGenerateInput): Promise<ImageGen
     }
   }
 
-  const apiKey = config.arkApiKey();
+  const apiKey = model.api_key ?? config.arkApiKey();
   if (!apiKey) {
     throw new Error("provider.invalid_key");
   }
@@ -83,8 +86,8 @@ export async function generateImage(input: ImageGenerateInput): Promise<ImageGen
     credential: {
       class_path: model.class_path,
       api_key: apiKey,
-      base_url: model.init_args?.base_url,
-      model: model.init_args?.model,
+      base_url: model.base_url,
+      model: model.model,
     },
     input: {
       prompt: effectivePrompt,

@@ -521,7 +521,7 @@ async function getTenantIdForCanvas(canvasId: string): Promise<string> {
   return canvas?.tenantId ?? "default";
 }
 
-async function resolveImageModel(modelId?: string): Promise<{
+export async function resolveImageModel(modelId?: string): Promise<{
   id: string; class_path: string; base_url?: string; model?: string;
   sizes?: string[]; supports_reference?: boolean; api_key?: string;
 }> {

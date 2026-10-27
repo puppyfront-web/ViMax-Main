@@ -10,7 +10,7 @@ import { runReadyDirtyChildren } from "../canvas/node-executor.service.js";
 import { broadcastNodeStatus } from "../canvas/node-status.js";
 import { appendVariant, isVariantJob, type VariantEntry } from "../canvas/variations.js";
 import { inferAssetKind, shouldCreateAsset } from "../asset/asset-utils.js";
-import { persistStoryboardSpawn } from "../canvas/storyboard-spawn.js";
+import { persistStoryboardSpawn, clearScriptStoryboardChain } from "../canvas/storyboard-spawn.js";
 import { applyAgentResult } from "../canvas/agent-result.js";
 import { maybeEvaluateNode } from "../evaluate/evaluate.service.js";
 
@@ -82,6 +82,8 @@ export async function handleJobEvent(raw: string): Promise<void> {
           audioDesc: cell.audioDesc ?? "",
           shotIdx: cell.shotIdx,
         }));
+        // 分镜重跑前清掉本 script 的旧链，保证 cell/shot/image/video 不翻倍。
+        await clearScriptStoryboardChain(canvasMeta.canvas_id, canvasMeta.node_id);
         await persistStoryboardSpawn(canvasMeta.canvas_id, canvasMeta.node_id, normalizedCells);
         await setNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done");
         broadcastNodeStatus(canvasMeta.canvas_id, canvasMeta.node_id, "done", null, parsed.job_id);

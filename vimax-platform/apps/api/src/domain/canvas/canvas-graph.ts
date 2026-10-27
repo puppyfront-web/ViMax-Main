@@ -249,7 +249,7 @@ const WIRE_RULES: readonly WireRule[] = [
   { from: "video", to: "concat", mode: "pair", sourceHandle: "output", targetHandle: "input" },
 ];
 
-/** Index-clamp so surplus nodes (more of one side) fold onto the last partner. */
+/** Index-clamp so surplus targets fold onto the last source. */
 function clampIndex(i: number, len: number): number {
   return len === 0 ? 0 : Math.min(i, len - 1);
 }
@@ -259,15 +259,19 @@ function clampIndex(i: number, len: number): number {
  *
  * - `fanout` rules connect every source to every target (e.g. one script
  *   feeds all its storyboard cells).
- * - `pair` rules connect source[i] → target[i]; when the two sides differ
- *   in length the surplus folds onto the last partner so nothing is left
- *   dangling.
+ * - `pair` rules connect sources to targets positionally — but only nodes
+ *   not already linked by `existingEdges` under the same rule. Surplus
+ *   targets fold onto the last free source (a source may legitimately feed
+ *   several targets, e.g. one shot driving variant images); surplus
+ *   sources dangle instead of folding onto a target — two first_frame
+ *   feeds into one video is how cross-shot contamination happens.
  *
  * Edge ids come from `idGenerator` (inject for deterministic tests).
  */
 export function inferAutoEdges(
   nodes: AutoWireNode[],
   idGenerator: () => string,
+  existingEdges: EdgeLike[] = [],
 ): InferredEdge[] {
   const byType = new Map<CanvasNodeType, string[]>();
   for (const n of nodes) {
@@ -295,10 +299,23 @@ export function inferAutoEdges(
         }
       }
     } else {
-      const span = Math.max(sources.length, targets.length);
-      for (let i = 0; i < span; i++) {
-        const s = sources[clampIndex(i, sources.length)];
-        const t = targets[clampIndex(i, targets.length)];
+      const typeById = new Map(nodes.map((n) => [n.id, n.type] as const));
+      const sourceTaken = new Set<string>();
+      const targetTaken = new Set<string>();
+      for (const e of existingEdges) {
+        if (
+          typeById.get(e.sourceNodeId) === rule.from &&
+          typeById.get(e.targetNodeId) === rule.to
+        ) {
+          sourceTaken.add(e.sourceNodeId);
+          targetTaken.add(e.targetNodeId);
+        }
+      }
+      const freeSources = sources.filter((s) => !sourceTaken.has(s));
+      const freeTargets = targets.filter((t) => !targetTaken.has(t));
+      for (let i = 0; i < freeTargets.length && freeSources.length > 0; i++) {
+        const t = freeTargets[i]!;
+        const s = freeSources[clampIndex(i, freeSources.length)]!;
         edges.push({
           id: idGenerator(),
           sourceNodeId: s,

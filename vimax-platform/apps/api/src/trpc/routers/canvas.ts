@@ -46,6 +46,7 @@ import {
   runStoryPush,
   runAudioGeneration,
   runAllDirty,
+  runAllFailed,
   runVariants,
   pickVariant,
   runIdea2Script,
@@ -180,6 +181,18 @@ export const canvasRouter = router({
       }
     }),
 
+  // ── Retry all failed nodes ─────────────────────────────────────
+
+  retryFailed: protectedProcedure
+    .input(CanvasSnapshotInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runAllFailed(input.canvas_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
   // ── Image variants: generate N, then pick the best ──────────────
 
   runVariants: protectedProcedure
@@ -296,11 +309,6 @@ export const canvasRouter = router({
         });
       }
 
-      const inferred = inferAutoEdges(
-        selected.map((n) => ({ id: n.id, type: n.type })),
-        randomUUID,
-      );
-
       const existing = await db
         .select({
           sourceNodeId: canvasEdges.sourceNodeId,
@@ -310,6 +318,12 @@ export const canvasRouter = router({
         })
         .from(canvasEdges)
         .where(eq(canvasEdges.canvasId, input.canvas_id));
+
+      const inferred = inferAutoEdges(
+        selected.map((n) => ({ id: n.id, type: n.type })),
+        randomUUID,
+        existing,
+      );
 
       const fresh = subtractEdges(inferred, existing);
       if (fresh.length > 0) {

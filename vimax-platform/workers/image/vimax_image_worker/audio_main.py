@@ -10,8 +10,11 @@ import json
 import logging
 import os
 import signal
+import sys
+from pathlib import Path
 
 import redis
+from dotenv import load_dotenv
 
 from vimax_image_worker.audio_handler import handle_audio_job
 from vimax_image_worker.reporter import JobReporter
@@ -22,7 +25,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("audio-worker")
 
 
+def setup() -> None:
+    # TTS 等处理器要从 VIMAX_ROOT 导入 tools 包；与 video_main 一致的自举。
+    load_dotenv()
+    vimax_root = os.environ.get("VIMAX_ROOT", "..")
+    resolved = Path(vimax_root).resolve()
+    if str(resolved) not in sys.path:
+        sys.path.insert(0, str(resolved))
+    logger.info("VIMAX_ROOT=%s", resolved)
+
+
 def main() -> None:
+    setup()
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     client = redis.from_url(
         redis_url,

@@ -34,6 +34,33 @@ export const ImageGenerateOutputSchema = z.object({
 
 export type ImageGenerateOutput = z.infer<typeof ImageGenerateOutputSchema>;
 
+// ── Image Studio edit ops（电商后处理：白底/换背景/扩图/局部调整） ──
+// worker 侧 image.edit 已就绪；remove_bg 为本地抠图免 prompt，其余依赖
+// prompt 约束保证商品主体不变。size 与 worker payload 同格式（WxH），
+// 缺省时服务端取源图尺寸。
+
+export const ImageEditInputSchema = z
+  .object({
+    source_asset_id: z.string().uuid(),
+    edit_op: z.enum(IMAGE_EDIT_OPS),
+    prompt: z.string().max(4000).optional(),
+    model_id: z.string().min(1),
+    size: z.string().regex(/^\d{3,4}x\d{3,4}$/).optional(),
+    negative_prompt: z.string().max(1000).optional(),
+    force: z.boolean().default(false),
+  })
+  .superRefine((val, ctx) => {
+    if (val.edit_op !== "remove_bg" && !val.prompt?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "prompt is required for this edit_op",
+        path: ["prompt"],
+      });
+    }
+  });
+
+export type ImageEditInput = z.infer<typeof ImageEditInputSchema>;
+
 // ── Video Studio (standalone generation, mirrors the image studio) ──
 
 export const VIDEO_MODES = ["t2v", "i2v"] as const;
@@ -172,7 +199,7 @@ export type ImageJobPayloadValidated = z.infer<typeof ImageJobPayloadSchema>;
 
 export const VideoJobPayloadSchema = z.object({
   job_id: z.string().uuid(),
-  job_type: z.enum(["shot.video"]),
+  job_type: z.enum(["shot.video", "video.t2v", "video.i2v"]),
   model_id: z.string(),
   credential: z.object({
     class_path: z.string(),
@@ -180,12 +207,26 @@ export const VideoJobPayloadSchema = z.object({
     base_url: z.string().optional(),
     model: z.string().optional(),
   }),
+  // 容量类失败（免费档拥堵/限流）时依次降级尝试的备用模型链
+  fallback_credentials: z
+    .array(
+      z.object({
+        class_path: z.string(),
+        api_key: z.string(),
+        base_url: z.string().optional(),
+        model: z.string().optional(),
+        label: z.string().optional(),
+      }),
+    )
+    .optional(),
   input: z.object({
     prompt: z.string(),
     first_frame_storage_key: z.string().optional(),
     last_frame_storage_key: z.string().optional(),
     duration_sec: z.number().int().positive().optional(),
     resolution: z.string().optional(),
+    aspect_ratio: z.string().optional(),
+    fps: z.number().int().optional(),
   }),
   callback: z.object({
     event_channel: z.string(),

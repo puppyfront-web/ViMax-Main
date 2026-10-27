@@ -75,6 +75,8 @@ export const IMAGE_SIZES = [
   "1600x900",
   "1024x1792",
   "1792x1024",
+  "1344x768",
+  "768x1344",
 ] as const;
 export type ImageSize = (typeof IMAGE_SIZES)[number];
 
@@ -86,6 +88,15 @@ export interface ImageJobCredential {
   api_key: string;
   base_url?: string;
   model?: string;
+}
+
+/** 容量类失败（拥堵/限流/配额尽）时依次降级尝试的备用模型。 */
+export interface FallbackCredential {
+  class_path: string;
+  api_key: string;
+  base_url?: string;
+  model?: string;
+  label?: string;
 }
 
 export interface ImageJobInput {
@@ -117,6 +128,8 @@ export interface ImageJobPayload {
   job_type: AllImageJobType;
   model_id: string;
   credential: ImageJobCredential;
+  /** 主模型容量类失败时依次降级尝试的备用模型链（可选） */
+  fallback_credentials?: FallbackCredential[];
   input: ImageJobInput;
   callback: ImageJobCallback;
   cache_key: string;
@@ -174,6 +187,8 @@ export interface VideoJobPayload {
     base_url?: string;
     model?: string;
   };
+  /** 容量类失败时依次降级尝试的备用模型链（可选） */
+  fallback_credentials?: FallbackCredential[];
   input: VideoJobInput;
   callback: {
     event_channel: string;
@@ -233,7 +248,7 @@ export type JobEvent =
 export interface ImageModelDescriptor {
   id: string;
   label: string;
-  provider: "doubao" | "google" | "yunwu";
+  provider: "doubao" | "google" | "yunwu" | "zhipu" | "modelscope" | "agnes";
   class_path: string;
   sizes: ImageSize[];
   supports_reference: boolean;
@@ -263,6 +278,58 @@ export const IMAGE_MODELS: ImageModelDescriptor[] = [
     sizes: ["1024x1024", "1600x900"],
     supports_reference: true,
     credits_per_image: 2,
+  },
+  {
+    id: "cogview-3-flash",
+    label: "CogView-3-Flash (Zhipu Free)",
+    provider: "zhipu",
+    class_path: "tools.ImageGeneratorCogViewZhipuAPI",
+    sizes: ["1024x1024", "1344x768", "768x1344"],
+    supports_reference: false,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://open.bigmodel.cn",
+      model: "cogview-3-flash",
+    },
+  },
+  {
+    id: "modelscope-qwen-image",
+    label: "Qwen-Image (ModelScope Free)",
+    provider: "modelscope",
+    class_path: "tools.ImageGeneratorModelScopeAPI",
+    sizes: ["1024x1024", "1344x768", "768x1344"],
+    supports_reference: false,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://api-inference.modelscope.cn",
+      model: "Qwen/Qwen-Image",
+    },
+  },
+  {
+    id: "modelscope-qwen-image-edit",
+    label: "Qwen-Image-Edit-2509 (ModelScope Free)",
+    provider: "modelscope",
+    class_path: "tools.ImageGeneratorQwenImageEditModelScopeAPI",
+    sizes: ["1024x1024", "1344x768", "768x1344"],
+    supports_reference: true,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://api-inference.modelscope.cn",
+      model: "Qwen/Qwen-Image-Edit-2509",
+    },
+  },
+  {
+    id: "agnes-image-2.5-flash",
+    label: "Agnes Image 2.5 Flash",
+    provider: "agnes",
+    class_path: "tools.ImageGeneratorAgnesAPI",
+    sizes: ["1024x1024", "1600x900", "1024x1792", "1792x1024"],
+    supports_reference: true,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://apihub.agnes-ai.com/v1",
+      model: "agnes-image-2.5-flash",
+    },
   },
 ];
 
@@ -383,7 +450,7 @@ export function composeVideoPrompt(input: {
 export interface VideoModelDescriptor {
   id: string;
   label: string;
-  provider: "doubao" | "google" | "yunwu";
+  provider: "doubao" | "google" | "yunwu" | "zhipu" | "agnes";
   class_path: string;
   maxDuration: number;
   resolutions: string[];
@@ -428,6 +495,48 @@ export const VIDEO_MODELS: VideoModelDescriptor[] = [
     resolutions: ["720p", "1080p"],
     supports_reference: true,
     credits_per_second: 3,
+  },
+  {
+    id: "cogvideox-flash",
+    label: "CogVideoX-Flash (Zhipu Free)",
+    provider: "zhipu",
+    class_path: "tools.VideoGeneratorCogVideoXZhipuAPI",
+    maxDuration: 5,
+    resolutions: ["480p", "720p", "1080p"],
+    supports_reference: true,
+    credits_per_second: 0,
+    init_args: {
+      base_url: "https://open.bigmodel.cn",
+      model: "cogvideox-flash",
+    },
+  },
+  {
+    id: "agnes-video-2.5",
+    label: "Agnes Video 2.5",
+    provider: "agnes",
+    class_path: "tools.VideoGeneratorAgnesAPI",
+    maxDuration: 12,
+    resolutions: ["720p", "1080p"],
+    supports_reference: true,
+    credits_per_second: 1,
+    init_args: {
+      base_url: "https://apihub.agnes-ai.com/v1",
+      model: "agnes-video-2.5",
+    },
+  },
+  {
+    id: "agnes-video-2.5-flash",
+    label: "Agnes Video 2.5 Flash (Free)",
+    provider: "agnes",
+    class_path: "tools.VideoGeneratorAgnesAPI",
+    maxDuration: 12,
+    resolutions: ["720p"],
+    supports_reference: true,
+    credits_per_second: 0,
+    init_args: {
+      base_url: "https://apihub.agnes-ai.com/v1",
+      model: "agnes-video-2.5-flash",
+    },
   },
 ];
 

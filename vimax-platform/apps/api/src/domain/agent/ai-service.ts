@@ -483,50 +483,96 @@ function buildRequestBody(
 }
 
 /**
- * Resolve provider config from model string ("vendorId:modelId")
- * Reads API key from DB model config first, falls back to environment variables.
+ * Resolve provider config from a model reference.
+ * Priority: the user's selected model (a models-table row id) > the
+ * user-configured default text row > environment variables.
  */
 async function resolveProviderConfig(model?: string): Promise<AIProviderConfig | null> {
-  // Try DB-backed text model first for apiKey, baseUrl, vendorModelId
-  let dbApiKey: string | undefined;
-  let dbBaseUrl: string | undefined;
-  let dbModelId: string | undefined;
+  // DB rows to consult: the explicitly selected one, then the tenant default.
+  let selected: TextModelSource | null = null;
+  let defaultModel: TextModelSource | null = null;
   try {
-    const { getDefaultModel } = await import("../model/model.service.js");
-    const defaultModel = await getDefaultModel("default", "text");
-    dbApiKey = defaultModel.apiKey ?? undefined;
-    const cfg = defaultModel.config as Record<string, unknown>;
-    dbBaseUrl = (defaultModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined;
-    dbModelId = defaultModel.vendorModelId ?? undefined;
+    const modelService = await import("../model/model.service.js");
+    const requested = model?.trim() || undefined;
+    if (requested) selected = await modelService.getModelById(requested);
+    try { defaultModel = await modelService.getDefaultModel("default", "text"); } catch {}
   } catch {
     // DB not available yet, fall through to env vars
   }
 
-  const baseUrl = dbBaseUrl ?? process.env.AI_BASE_URL ?? process.env.OPENAI_BASE_URL;
-  const apiKey = dbApiKey ?? process.env.AI_API_KEY ?? process.env.OPENAI_API_KEY ?? process.env.ARK_API_KEY;
-
-  if (!baseUrl || !apiKey) {
-    return null;
-  }
-
-  const resolvedModelId = dbModelId ?? model?.split(":")[1] ?? "default";
+  const resolved = resolveTextModelSelection(model, selected, defaultModel, {
+    baseUrl: process.env.AI_BASE_URL ?? process.env.OPENAI_BASE_URL,
+    apiKey: process.env.AI_API_KEY ?? process.env.OPENAI_API_KEY ?? process.env.ARK_API_KEY,
+  });
+  if (!resolved) return null;
 
   return {
-    id: model?.split(":")[0] ?? "default",
+    id: "default",
     name: "Default Provider",
     type: "openai",
-    baseUrl,
-    apiKey,
+    baseUrl: resolved.baseUrl,
+    apiKey: resolved.apiKey,
     models: [
       {
-        id: resolvedModelId,
-        name: resolvedModelId,
+        id: resolved.modelId,
+        name: resolved.modelId,
         type: "chat",
         supportsStreaming: true,
         supportsThinking: true,
       },
     ],
   };
+}
+
+// ── Text model priority resolution (pure, unit-testable) ────────────
+
+export interface TextModelSource {
+  apiKey?: string | null;
+  baseUrl?: string | null;
+  vendorModelId?: string | null;
+  config?: Record<string, unknown> | null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sourceBaseUrl(source: TextModelSource | null): string | undefined {
+  const cfg = (source?.config ?? {}) as Record<string, unknown>;
+  const initArgs = (cfg.init_args ?? {}) as Record<string, string | undefined>;
+  return source?.baseUrl ?? (cfg.base_url as string | undefined) ?? initArgs.base_url ?? undefined;
+}
+
+/**
+ * 用户选择 > 用户配置的默认行 > 环境变量。凭据(baseUrl/apiKey)取自
+ * 选中行,缺项时逐字段回退 env;模型 id 取选中行 vendorModelId,其次
+ * 显式模型串（"vendor:model" 取冒号后部分,裸 id 原样）,最后默认行。
+ */
+export function resolveTextModelSelection(
+  model: string | undefined,
+  selected: TextModelSource | null,
+  fallback: TextModelSource | null,
+  env: { baseUrl?: string; apiKey?: string },
+): { baseUrl: string; apiKey: string; modelId: string } | null {
+  const requested = model?.trim() || undefined;
+  const credentialSource = selected ?? fallback;
+  const baseUrl = sourceBaseUrl(credentialSource) ?? env.baseUrl;
+  const apiKey = credentialSource?.apiKey || env.apiKey;
+  if (!baseUrl || !apiKey) return null;
+
+  // A selected row's id is a UUID — never send it to the provider as a model id.
+  const explicitModel =
+    requested && !UUID_RE.test(requested)
+      ? requested.includes(":")
+        ? requested.split(":").slice(1).join(":")
+        : requested
+      : undefined;
+
+  const modelId =
+    selected?.vendorModelId ||
+    explicitModel ||
+    fallback?.vendorModelId ||
+    "default";
+
+  return { baseUrl, apiKey, modelId };
 }
 
 /**

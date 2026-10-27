@@ -15,7 +15,7 @@ def resolve_font(font: str | None) -> str | None:
     file path, then the Noto CJK default. None lets PIL fall back to its bitmap
     font, which cannot render CJK (deployment needs fonts-noto-cjk)."""
     env_font = os.environ.get("SUBTITLE_FONT")
-    if env_font:
+    if env_font and os.path.exists(env_font):
         return env_font
     if font and os.path.exists(font):
         return font

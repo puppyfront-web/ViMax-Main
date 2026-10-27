@@ -50,6 +50,7 @@ class ImageJobCredential(BaseModel):
     api_key: str
     base_url: str | None = None
     model: str | None = None
+    label: str | None = None
 
 
 class ImageTextLayer(BaseModel):
@@ -85,6 +86,7 @@ class ImageJobPayload(BaseModel):
     job_type: str
     model_id: str
     credential: ImageJobCredential
+    fallback_credentials: list[ImageJobCredential] = Field(default_factory=list)
     input: ImageJobInput
     callback: ImageJobCallback
     cache_key: str
@@ -182,22 +184,43 @@ async def _run_generation_job(payload: ImageJobPayload, workdir: Path, reporter:
         mask_path = paths[slots["mask"]] if "mask" in slots else None
 
         await reporter.progress(20, "Loading image generator")
-        generator = build_image_generator(payload.credential)
-        await reporter.progress(40, "Calling image model")
 
+        prompt = compose_edit_prompt(spec.prompt, spec.edit_op)
         options: dict[str, Any] = {}
         if spec.seed is not None:
             options["seed"] = spec.seed
         if mask_path is not None:
             options["mask_path"] = mask_path
-        options = _accepted_kwargs(generator.generate_single_image, options)
 
-        output = await generator.generate_single_image(
-            prompt=compose_edit_prompt(spec.prompt, spec.edit_op),
-            reference_image_paths=ref_paths,
-            size=spec.size,
-            **options,
-        )
+        # 主模型 + 备用链：容量类失败（拥堵/限流/配额尽）依次降级尝试
+        candidates = [payload.credential, *payload.fallback_credentials]
+        output = None
+        for idx, cred in enumerate(candidates):
+            label = cred.label or cred.model or cred.class_path.rsplit(".", 1)[-1]
+            await reporter.progress(40, f"Calling image model via {label}")
+            try:
+                generator = build_image_generator(cred)
+                # 各模型接受的 kwargs 不同（如 seed/mask），逐候选过滤
+                call_options = _accepted_kwargs(generator.generate_single_image, options)
+                output = await generator.generate_single_image(
+                    prompt=prompt,
+                    reference_image_paths=ref_paths,
+                    size=spec.size,
+                    **call_options,
+                )
+                break
+            except Exception as exc:
+                code, message, _ = _map_error(exc)
+                capacity = code in ("provider.rate_limited", "provider.timeout")
+                if not capacity or idx == len(candidates) - 1:
+                    raise
+                logger.warning(
+                    "Image job %s: model %s capacity-limited (%s), switching to fallback",
+                    payload.job_id, label, message[:80],
+                )
+                await reporter.progress(
+                    45, f"模型 {label} 容量不足，切换备用模型重试",
+                )
 
     local_path = workdir / f"{payload.job_id}.png"
     # ImageOutput.save(path) 不收 pnginfo —— 先落盘再用 PIL 回写 AI 元数据。
@@ -324,6 +347,10 @@ async def _run(payload: ImageJobPayload, redis_client) -> None:
 def _map_error(exc: Exception) -> tuple[str, str, bool]:
     message = str(exc).lower()
     if "rate" in message and "limit" in message:
+        return "provider.rate_limited", str(exc), True
+    # 免费档拥堵（provider 返回 queue full）与配额尽（余额 0）都按容量类
+    # 处理：可重试且应切换备用模型。
+    if "queue" in message or "quota" in message:
         return "provider.rate_limited", str(exc), True
     if "401" in message or "unauthorized" in message or "api key" in message:
         return "provider.invalid_api_key", str(exc), False

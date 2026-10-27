@@ -25,6 +25,7 @@ class VideoJobCredential(BaseModel):
     api_key: str
     base_url: str | None = None
     model: str | None = None
+    label: str | None = None
 
 
 class VideoJobInput(BaseModel):
@@ -48,6 +49,7 @@ class VideoJobPayload(BaseModel):
     job_type: str
     model_id: str
     credential: VideoJobCredential
+    fallback_credentials: list[VideoJobCredential] = Field(default_factory=list)
     input: VideoJobInput
     callback: VideoJobCallback
     cache_key: str
@@ -69,6 +71,10 @@ def _build_video_generator(credential: VideoJobCredential):
 def _map_error(exc: Exception) -> tuple[str, str, bool]:
     message = str(exc).lower()
     if "rate" in message and "limit" in message:
+        return "provider.rate_limited", str(exc), True
+    # 免费档拥堵（Agnes 返回 queue full）与配额尽（余额 0）都按容量类
+    # 处理：可重试且应切换备用模型。
+    if "queue" in message or "quota" in message:
         return "provider.rate_limited", str(exc), True
     if "401" in message or "unauthorized" in message or "api key" in message:
         return "provider.invalid_api_key", str(exc), False
@@ -106,18 +112,41 @@ async def _run_video(payload: VideoJobPayload, redis_client) -> None:
 
         await reporter.progress(25, "Loading video generator")
 
-        generator = _build_video_generator(payload.credential)
-        await reporter.progress(35, f"Generating video ({duration}s, {resolution}, {aspect_ratio})")
-
-        # Call VideoGenerator.generate_single_video()
-        output = await generator.generate_single_video(
-            prompt=prompt,
-            reference_image_paths=ref_paths,
-            duration=duration,
-            resolution=resolution,
-            aspect_ratio=aspect_ratio,
-            fps=fps,
-        )
+        # 主模型 + 备用链：容量类失败（拥堵/限流/超时）依次降级尝试
+        candidates = [payload.credential, *payload.fallback_credentials]
+        output = None
+        for idx, cred in enumerate(candidates):
+            label = cred.label or cred.model or cred.class_path.rsplit(".", 1)[-1]
+            await reporter.progress(
+                35, f"Generating video ({duration}s, {resolution}, {aspect_ratio}) via {label}"
+            )
+            try:
+                generator = _build_video_generator(cred)
+                output = await generator.generate_single_video(
+                    prompt=prompt,
+                    reference_image_paths=ref_paths,
+                    duration=duration,
+                    resolution=resolution,
+                    aspect_ratio=aspect_ratio,
+                    fps=fps,
+                )
+                break
+            except Exception as exc:
+                code, message, _ = _map_error(exc)
+                capacity = (
+                    code in ("provider.rate_limited", "provider.timeout")
+                    or "1305" in message
+                    or "访问量过大" in message
+                )
+                if not capacity or idx == len(candidates) - 1:
+                    raise
+                logger.warning(
+                    "Video job %s: model %s capacity-limited (%s), switching to fallback",
+                    payload.job_id, label, message[:80],
+                )
+                await reporter.progress(
+                    40, f"模型 {label} 容量不足，切换备用模型重试",
+                )
 
         await reporter.progress(70, "Downloading video result")
 

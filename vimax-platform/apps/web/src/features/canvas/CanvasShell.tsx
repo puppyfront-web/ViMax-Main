@@ -85,6 +85,7 @@ export function CanvasShell() {
     autoPipelineState,
     startAutoPipeline,
     cancelAutoPipeline,
+    retryFailed: retryFailedNodes,
     autoPipelineStarting,
   } = useCanvas();
 
@@ -148,6 +149,7 @@ export function CanvasShell() {
               autoPipelineState={autoPipelineState}
               startAutoPipeline={startAutoPipeline}
               cancelAutoPipeline={cancelAutoPipeline}
+              retryFailedNodes={retryFailedNodes}
               recentNodeIds={recentNodeIds}
               selectedNodeIds={selectedNodeIds}
               onFocusNode={focusNode}

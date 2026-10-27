@@ -1,8 +1,12 @@
 import type { CanvasNodeType } from "@vimax/contracts";
 import { getImageKindPreset } from "@vimax/contracts";
 
-export const FALLBACK_IMAGE_MODEL_ID = "doubao-seedream-4-0";
-export const FALLBACK_VIDEO_MODEL_ID = "doubao-seedance-1-0-lite";
+// 默认模型可经 NEXT_PUBLIC_* 覆盖（如本地免费链路指向 cogview-3-flash /
+// cogvideox-flash，详见 docs/specs/FREE-MEDIA-MODELS-RESEARCH.md）。
+export const FALLBACK_IMAGE_MODEL_ID =
+  process.env.NEXT_PUBLIC_DEFAULT_IMAGE_MODEL || "doubao-seedream-4-0";
+export const FALLBACK_VIDEO_MODEL_ID =
+  process.env.NEXT_PUBLIC_DEFAULT_VIDEO_MODEL || "doubao-seedance-1-0-lite";
 
 export interface ModelDefaults {
   imageModelId?: string;

@@ -329,6 +329,22 @@ export function ModelsSettingsPanel() {
 
                 <div>
                   <label className="block text-[11px] font-medium text-[var(--color-text-muted)] mb-1">
+                    模型 ID <span className="text-[var(--color-danger)]">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.vendorModelId}
+                    onChange={(e) => setFormData({ ...formData, vendorModelId: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-1)] text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] font-mono"
+                    placeholder="例如: gpt-4o, glm-4.7, cogview-3-flash"
+                  />
+                  <p className="text-[10px] text-[var(--color-text-dim)] mt-1">
+                    实际调用时发送给服务商的模型 ID（名称仅用于显示）
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[var(--color-text-muted)] mb-1">
                     API Key
                   </label>
                   <input
@@ -352,32 +368,17 @@ export function ModelsSettingsPanel() {
               </summary>
 
               <div className="space-y-3 mt-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-medium text-[var(--color-text-muted)] mb-1">
-                      Vendor ID
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.vendorId}
-                      onChange={(e) => setFormData({ ...formData, vendorId: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-1)] text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
-                      placeholder="例如: openai-compatible"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-medium text-[var(--color-text-muted)] mb-1">
-                      Vendor Model ID
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.vendorModelId}
-                      onChange={(e) => setFormData({ ...formData, vendorModelId: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-1)] text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
-                      placeholder="例如: gpt-4o"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-[var(--color-text-muted)] mb-1">
+                    Vendor ID
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.vendorId}
+                    onChange={(e) => setFormData({ ...formData, vendorId: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-1)] text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                    placeholder="例如: openai-compatible"
+                  />
                 </div>
 
                 <div>

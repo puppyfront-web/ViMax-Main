@@ -669,6 +669,8 @@ export interface ToolCallOptions {
   nodeTypeCounts?: Record<string, number>;
   /** Current user — drives personal-memory tools (remember). */
   userId?: string;
+  /** 会话选中的文本模型(models 表行 id)— 文本类工具优先使用 */
+  modelId?: string;
 }
 
 /** Browser-sandbox execution request produced by run_code — the realtime
@@ -706,6 +708,7 @@ export async function executeToolCall(
   const db = getDb();
   const onMutation = opts?.onCanvasMutation;
   const typeCounts = opts?.nodeTypeCounts ?? {};
+  const textModelId = opts?.modelId;
 
   switch (toolName) {
     // ── create_canvas_nodes ──────────────────────────────────────────
@@ -801,6 +804,7 @@ export async function executeToolCall(
         const response = await generateText({
           system: "你是一位资深的中国影视编剧，擅长创作各类题材的剧本。你的回复专业、有创意、且符合工业标准。",
           prompt: scriptPrompt,
+          model: textModelId,
           temperature: 0.8,
           maxTokens: 4096,
         });
@@ -875,6 +879,7 @@ export async function executeToolCall(
         const response = await generateText({
           system,
           prompt,
+          model: textModelId,
           temperature: 0.8,
           maxTokens: 4096,
         });
@@ -1021,6 +1026,7 @@ export async function executeToolCall(
         const response = await generateText({
           system: "你是一位专业的分镜师。你只输出有效的JSON，不包含任何其他文字。",
           prompt: sbPrompt,
+          model: textModelId,
           temperature: 0.7,
           maxTokens: 4096,
         });
@@ -1118,6 +1124,7 @@ export async function executeToolCall(
         const response = await generateText({
           system: "你是一个专业的角色分析工具。你只输出有效的JSON。",
           prompt: charPrompt,
+          model: textModelId,
           temperature: 0.5,
           maxTokens: 4096,
         });

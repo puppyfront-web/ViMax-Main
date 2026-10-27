@@ -33,7 +33,7 @@ import { useCanvasSnapshot, useCanvasSave } from "./hooks/useCanvasSnapshot";
 import { useNodeRun } from "./hooks/useNodeRun";
 import { useUndoRedo } from "./hooks/useUndoRedo";
 import { computeDagreLayout, computeZoneLayout } from "./utils/dagre-layout";
-import { getDefaultNodeData } from "./utils/node-defaults";
+import { getDefaultNodeData, FALLBACK_IMAGE_MODEL_ID } from "./utils/node-defaults";
 import {
   copyNode,
   copySelectedToClipboard,
@@ -97,7 +97,7 @@ export function CanvasProvider({
   } = useCanvasSnapshot(canvasId);
 
   const { save } = useCanvasSave(canvasId);
-  const { state: autoPipelineState, start: startAutoPipeline, cancel: cancelAutoPipeline, isStarting: autoPipelineStarting } =
+  const { state: autoPipelineState, start: startAutoPipeline, cancel: cancelAutoPipeline, retryFailed: retryFailedPipeline, isStarting: autoPipelineStarting } =
     useAutoPipeline(canvasId);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const { runNode, isRunning, nodeRunStates } = useNodeRun({
@@ -601,7 +601,7 @@ export function CanvasProvider({
         },
         data: {
           prompt: "",
-          modelId: modelDefaults.imageModelId ?? "doubao-seedream-4-0",
+          modelId: modelDefaults.imageModelId ?? FALLBACK_IMAGE_MODEL_ID,
           size: "1024x1024",
           status: "idle",
         },
@@ -842,7 +842,7 @@ export function CanvasProvider({
           position,
           data: {
             prompt: `参考图: ${file.name}`,
-            modelId: modelDefaults.imageModelId ?? "doubao-seedream-4-0",
+            modelId: modelDefaults.imageModelId ?? FALLBACK_IMAGE_MODEL_ID,
             size: "1024x1024",
             referenceAssetIds: [req.asset_id],
             status: "idle",
@@ -978,6 +978,7 @@ export function CanvasProvider({
       autoPipelineState,
       startAutoPipeline,
       cancelAutoPipeline,
+      retryFailed: retryFailedPipeline,
       autoPipelineStarting,
     }),
     [
@@ -1050,6 +1051,7 @@ export function CanvasProvider({
       autoPipelineState,
       startAutoPipeline,
       cancelAutoPipeline,
+      retryFailedPipeline,
       autoPipelineStarting,
     ],
   );

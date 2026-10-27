@@ -337,11 +337,13 @@ async function handleChatSend(
 
     // ── Run the real Decision Agent ──
 
-    // Check if an AI provider is configured (DB model apiKey or env vars)
-    const { getDefaultModel } = await import("../domain/model/model.service.js");
+    // Check if an AI provider is configured (DB model apiKey or env vars).
+    // 选中行的凭据优先于默认行 — 用户选了哪个模型就按哪个判断。
+    const { getDefaultModel, getModelById } = await import("../domain/model/model.service.js");
     let defaultTextModel: Awaited<ReturnType<typeof getDefaultModel>> | null = null;
     try { defaultTextModel = await getDefaultModel("default", "text"); } catch {}
-    const dbApiKey = defaultTextModel?.apiKey;
+    const selectedModel = modelId ? await getModelById(modelId).catch(() => null) : null;
+    const dbApiKey = selectedModel?.apiKey ?? defaultTextModel?.apiKey;
     const hasAI =
       !!dbApiKey ||
       (!!process.env.AI_BASE_URL || !!process.env.OPENAI_BASE_URL) &&
@@ -383,6 +385,9 @@ async function handleChatSend(
     // decides the next action itself until done, or a budget trips
     // (step cap / token cap / same-failed-call twice).
     let fullResponse = "";
+    // Last provider-side stream error — surfaced verbatim in the final
+    // message so a misconfigured model row is diagnosable from the chat.
+    let lastStreamError: string | null = null;
     const toolCalls: Array<{ name: string; args: Record<string, unknown>; status: "completed" | "failed" }> = [];
 
     // Callback: broadcast canvas mutations to all clients viewing this canvas
@@ -427,6 +432,7 @@ async function handleChatSend(
           }
           break;
         case "error":
+          lastStreamError = chunk.error ?? "Unknown error";
           broadcastToConversation(conversationId, {
             type: "chat.error", conversationId, error: chunk.error ?? "Unknown error",
           });
@@ -510,7 +516,7 @@ async function handleChatSend(
             const toolSpan = trace.recorder.startSpan(`tool.${tc.name}`, { tool: tc.name });
             const execResult = await executeToolCall(
               tc.name, tc.args, canvasId,
-              { onCanvasMutation, nodeTypeCounts, userId },
+              { onCanvasMutation, nodeTypeCounts, userId, modelId },
             );
             toolSpan.end({ success: execResult.success });
 
@@ -569,7 +575,9 @@ async function handleChatSend(
         if (!fullResponse.trim()) {
           fullResponse = abortController.signal.aborted
             ? "已停止生成。"
-            : "我已收到您的消息，但暂时无法处理。请确保 AI Provider 已正确配置。";
+            : lastStreamError
+              ? `AI 调用失败：${lastStreamError.slice(0, 300)}\n\n当前模型：${(selectedModel ?? defaultTextModel)?.name ?? "默认"}。请在「设置 → 模型配置」中检查该模型的 Base URL、模型 ID 与 API Key。`
+              : "我已收到您的消息，但暂时无法处理。请确保 AI Provider 已正确配置。";
         }
       });
     } catch (agentErr) {

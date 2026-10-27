@@ -13,9 +13,10 @@ const STAGE_LABELS: Record<string, string> = {
 interface PipelineStepperProps {
   state: AutoPipelineState;
   onCancel?: () => void;
+  onRetryFailed?: () => void;
 }
 
-export function PipelineStepper({ state, onCancel }: PipelineStepperProps) {
+export function PipelineStepper({ state, onCancel, onRetryFailed }: PipelineStepperProps) {
   if (state.status === "idle") return null;
 
   // Overall progress across all stages (done units / total units)
@@ -57,6 +58,23 @@ export function PipelineStepper({ state, onCancel }: PipelineStepperProps) {
             }}
           >
             停止
+          </button>
+        )}
+        {state.status === "failed" && state.summary && state.summary.failed > 0 && onRetryFailed && (
+          <button
+            type="button"
+            onClick={onRetryFailed}
+            style={{
+              fontSize: 10,
+              padding: "2px 8px",
+              borderRadius: 4,
+              border: "1px solid var(--color-accent)",
+              backgroundColor: "transparent",
+              color: "var(--color-accent)",
+              cursor: "pointer",
+            }}
+          >
+            重试失败项
           </button>
         )}
       </div>
@@ -118,6 +136,8 @@ export function PipelineStepper({ state, onCancel }: PipelineStepperProps) {
       {state.summary && (
         <div style={{ fontSize: 10, color: "var(--color-text-muted)", marginTop: 4 }}>
           成功 {state.summary.succeeded} · 失败 {state.summary.failed}
+          {state.summary.skipped ? ` · 跳过 ${state.summary.skipped}` : ""}
+          {state.summary.message ? ` — ${state.summary.message}` : ""}
         </div>
       )}
     </div>

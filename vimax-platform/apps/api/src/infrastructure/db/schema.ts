@@ -253,7 +253,10 @@ export const models = pgTable(
     isEnabled: integer("is_enabled").default(1),
     priority: integer("priority").default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
   },
   (table) => ({
     tenantTypeIdx: index("models_tenant_type_idx").on(table.tenantId, table.type),

@@ -58,6 +58,7 @@ Agent ↔ job type 对照（`packages/contracts/src/job-types.ts` `PIPELINE_JOB_
 - `apps/web/src/lib/local-assets.ts` — IndexedDB 本地资产金库
 - `apps/web/src/features/assets/useAssetSource.ts` — local-first 解析：本地命中直出 objectURL；未命中拉取二进制落库，随后（仅 generated 资产）调用 `asset.offload` 删除远端副本
 - `apps/api/src/domain/asset/asset-offload.ts` — offload（幂等，upload 资产受保护）+ TTL 清扫（`ASSET_SWEEP_TTL_HOURS`，默认 24h，0 关闭）
+- 下游依赖防护：offload 前检查资产生产节点是否仍有非 done 的直接下游（image→video→concat 的下一跳还要从对象存储读该二进制），有则跳过（`downstream_pending`）；TTL 清扫只避让 running 状态的下游，遗弃链到点仍清
 - 用户手动「存到云端」走既有 requestUpload 通道，产物标记 `source=upload`，永不自动清除
 - `assets.offloaded_at` 非空 = 二进制已不在云端（元数据行保留以维持节点引用）
 

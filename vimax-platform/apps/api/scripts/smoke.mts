@@ -2,6 +2,8 @@
 // 用法: pnpm --filter @vimax/api exec tsx scripts/smoke.mts
 // 前置: docker compose up -d (postgres/redis/minio) + API(:3005) + Web(:3010)
 //       + image worker 运行中。文本/图像模型未配 key 时对应项自动 SKIP。
+//       免费链路: export ZHIPU_API_KEY / MODELSCOPE_API_TOKEN 后运行，
+//       S13 优先走 cogview-3-flash / modelscope-qwen-image，S13b 走 cogvideox-flash。
 
 import { execSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -123,11 +125,11 @@ export function makePng(width: number, height: number, rgb: [number, number, num
   ]);
 }
 
-async function pollJob(jobId: string, token: string, timeoutMs: number) {
+async function pollJob(jobId: string, token: string, timeoutMs: number, procedure = "image.getJob") {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const job = await trpcQuery<{ status: string; output_url?: string; error_message?: string }>(
-      "image.getJob", { job_id: jobId }, token,
+      procedure, { job_id: jobId }, token,
     );
     if (job.status === "succeeded") return job;
     if (job.status === "failed") throw new Error(`job failed: ${job.error_message ?? "?"}`);
@@ -200,7 +202,8 @@ async function main() {
   });
 
   await check("S08 资产上传 (presigned PUT + confirm)", async () => {
-    const png = makePng(800, 600, [26, 53, 94]);
+    // 像素随时间变化：保证 sha 唯一，避免下游 S10 命中已被 TTL 清扫的历史缓存对象。
+    const png = makePng(800, 600, [26, 53, Date.now() % 256]);
     const up = await trpcMut<{ asset_id: string; upload_url: string }>(
       "asset.requestUpload", { mime_type: "image/png", size_bytes: png.length }, token);
     const put = await fetch(up.upload_url, { method: "PUT", body: png, headers: { "Content-Type": "image/png" } });
@@ -227,7 +230,7 @@ async function main() {
       nodes: [{
         id: nodeId, type: "image", position: { x: 100, y: 100 },
         data: {
-          prompt: "text overlay", modelId: "pil", size: "800x600",
+          prompt: `text overlay ${Date.now()}`, modelId: "pil", size: "800x600",
           sourceAssetId: assetId,
           textLayers: [{ text: "限时五折", x: 0.5, y: 0.75, font_size: 72, color: "#ffffff", align: "center" }],
         },
@@ -239,7 +242,7 @@ async function main() {
     const job = await pollJob(run.job_id, token, 90_000);
     assert(job.output_url, "无 output_url");
     const out = Buffer.from(await (await fetch(job.output_url)).arrayBuffer());
-    assert(out.subarray(0, 8).equals(makePng(1, 1, [0, 0, 0]).subarray(0, 8)), "非 PNG");
+    assert(out.subarray(0, 8).equals(makePng(1, 1, [0, 0, 0]).subarray(0, 8)), `非 PNG (${out.subarray(0, 16).toString("hex")})`);
     assert(out.length > 2000, `产物过小 ${out.length}`);
     let backed = false;
     for (let i = 0; i < 6 && !backed; i++) {
@@ -305,14 +308,44 @@ async function main() {
   });
 
   // 真实生图（依赖图像模型 key）
-  if (await modelHasKey("image")) {
-    const models = await trpcQuery<{ items: Array<{ id: string; label: string }> }>(
-      "model.listImageModels", {}, token);
-    const imageModelId = models.items[0]?.id;
-    await check(`S13 真实文生图 (${models.items[0]?.label ?? imageModelId} 全链路)`, async () => {
+  // 免费档（智谱/魔搭）key 在环境变量里即可跑真实生图；否则回退 DB 默认模型。
+  const zhipuKey = process.env.ZHIPU_API_KEY ?? "";
+  const msToken = process.env.MODELSCOPE_API_TOKEN ?? "";
+  const models = await trpcQuery<{ items: Array<{ id: string; label: string }> }>(
+    "model.listImageModels", {}, token);
+  const freeImageModel =
+    (zhipuKey && models.items.find((m) => m.id === "cogview-3-flash")) ||
+    (msToken && models.items.find((m) => m.id === "modelscope-qwen-image")) ||
+    // key 未配置时上面得到 ""，归一为 undefined，避免后续 `?? items[0]` 失效
+    undefined;
+  if (freeImageModel || (await modelHasKey("image"))) {
+    const picked = freeImageModel ?? models.items[0]!;
+    await check("S12b 生图工坊 image.edit 透明底 (studio edit 链路)", async () => {
+      assert(assetId, "缺少前置资产");
+      // 编辑链路要求模型支持参考图（cogview 等纯 t2i 档会被服务端正确拒绝）
+      const editModel =
+        models.items.find((m) => m.supports_reference !== false) ?? freeImageModel ?? picked;
+      const res = await trpcMut<{ job_id: string }>("image.edit", {
+        source_asset_id: assetId, edit_op: "remove_bg", model_id: editModel.id,
+      }, token);
+      const job = await pollJob(res.job_id, token, 90_000);
+      assert(job.output_url, "无 output_url");
+      const detail = await trpcQuery<{ edit_op?: string; source_asset_id?: string }>(
+        "image.getJob", { job_id: res.job_id }, token);
+      assert(detail.edit_op === "remove_bg" && detail.source_asset_id === assetId,
+        "getJob 未回传 edit_op/source_asset_id");
+      const out = Buffer.from(await (await fetch(job.output_url)).arrayBuffer());
+      assert(out.subarray(0, 8).equals(makePng(1, 1, [0, 0, 0]).subarray(0, 8)), `非 PNG (${out.subarray(0, 16).toString("hex")})`);
+      const hist = await trpcQuery<{ items: Array<{ job_id: string; edit_op?: string }> }>(
+        "image.listHistory", { limit: 5 }, token);
+      assert(hist.items.some((h) => h.job_id === res.job_id && h.edit_op === "remove_bg"),
+        "历史未含编辑标记");
+      return `job=${res.job_id.slice(0, 8)} out=${out.length}B`;
+    });
+    await check(`S13 真实文生图 (${picked.label} 全链路)`, async () => {
       const gen = await trpcMut<{ job_id: string }>("image.generate", {
-        mode: "t2i", prompt: "一只透明玻璃香水瓶放在纯白色背景上，柔和棚拍光线",
-        model_id: imageModelId!, size: "1024x1024",
+        mode: "t2i", prompt: `一只透明玻璃香水瓶放在纯白色背景上，柔和棚拍光线 ${Date.now()}`,
+        model_id: picked.id, size: "1024x1024",
       }, token);
       const job = await pollJob(gen.job_id, token, 180_000);
       assert(job.output_url, "无 output_url");
@@ -320,7 +353,25 @@ async function main() {
       assert(out.length > 10_000, `产物过小 ${out.length}`);
       return `out=${out.length}B`;
     });
-  } else skip("S13 真实文生图", "图像模型未配 key");
+  } else {
+    skip("S12b 生图工坊 image.edit 透明底", "图像模型未配 key");
+    skip("S13 真实文生图", "图像模型未配 key");
+  }
+
+  // 真实文生视频（免费档 cogvideox-flash，异步 1-5 分钟）
+  if (zhipuKey) {
+    await check("S13b 真实文生视频 (CogVideoX-Flash 免费链路)", async () => {
+      const gen = await trpcMut<{ job_id: string }>("video.generate", {
+        mode: "t2v", prompt: `一只猫在阳光下玩毛线球，柔和镜头缓慢推近 ${Date.now()}`,
+        model_id: "cogvideox-flash", duration_sec: 5, resolution: "480p", aspect_ratio: "16:9", fps: 16,
+      }, token);
+      const job = await pollJob(gen.job_id, token, 300_000, "video.getJob");
+      assert(job.output_url, "无 output_url");
+      const out = Buffer.from(await (await fetch(job.output_url)).arrayBuffer());
+      assert(out.length > 30_000, `产物过小 ${out.length}`);
+      return `out=${(out.length / 1024).toFixed(0)}KB`;
+    });
+  } else skip("S13b 真实文生视频", "未配置 ZHIPU_API_KEY");
 
   // Chat Agent 全链路（依赖文本模型 key + 上游可用）
   if (await modelHasKey("text")) {
@@ -338,7 +389,7 @@ async function main() {
         ws.on("unexpected-response", (_req, res) => {
           reject(new Error(`WS upgrade HTTP ${res.statusCode}`));
         });
-        const timer = setTimeout(() => { ws.close(); reject(new Error("180s 超时")); }, 180_000);
+        const timer = setTimeout(() => { ws.close(); reject(new Error("300s 超时")); }, 300_000);
         ws.on("open", () => {
           ws.send(JSON.stringify({ type: "chat.subscribe", canvasId }));
           ws.send(JSON.stringify({ type: "chat.send", conversationId: convId, content: "帮我生成一张1:1的商品图：透明玻璃香水瓶，纯白背景，电商主图风格" }));
@@ -370,6 +421,43 @@ async function main() {
       return `tools=[${toolCalls.map((t) => t.tool).join(",")}] image节点=${imageNodes}`;
     });
   } else skip("S14 Chat Agent 工具循环", "文本模型未配 key");
+
+  // 分镜重跑幂等：重跑 storyboard 必须替换旧链而不是追加——
+  // 旧 cell 全部消失，新 cell 全新 id（否则节点翻倍 + 自动连线跨链错接）
+  if (await modelHasKey("text")) {
+    await check("S17 分镜重跑幂等 (旧链清理，节点不翻倍)", async () => {
+      assert(canvasId, "无画布");
+      const scriptId = randomUUID();
+      await trpcMut("canvas.save", {
+        canvas_id: canvasId,
+        nodes: [{
+          id: scriptId, type: "script", position: { x: 0, y: 0 },
+          data: {
+            content: `一只橘猫在花园里追蝴蝶。第一场：清晨，橘猫蹲在花架下盯着一只白蝴蝶。第二场：橘猫扑空，蝴蝶落在它的鼻尖上。`,
+            status: "idle",
+          },
+          status: "idle",
+        }],
+        edges: [],
+      }, token);
+
+      const runOnce = async () => {
+        const run = await trpcMut<{ job_id: string }>(
+          "canvas.runScript2Storyboard", { canvas_id: canvasId, node_id: scriptId }, token);
+        await pollJob(run.job_id, token, 180_000);
+        const snap = await trpcQuery<CanvasSnap>("canvas.snapshot", { canvas_id: canvasId }, token);
+        const cells = snap.nodes.filter((n) => n.type === "storyboard_cell").map((n) => n.id);
+        assert(cells.length > 0, "分镜 0 cell");
+        return cells;
+      };
+
+      const cells1 = await runOnce();
+      const cells2 = await runOnce();
+      const leftover = cells1.filter((id) => cells2.includes(id));
+      assert(leftover.length === 0, `旧 cell 残留 ${leftover.length} 个（重跑未清理旧链）`);
+      return `run1=${cells1.length} cell → run2=${cells2.length} cell（全新替换）`;
+    });
+  } else skip("S17 分镜重跑幂等", "文本模型未配 key");
 
   await check("S15 沙盒脚本生命周期", async () => {
     const { scriptId } = await trpcMut<{ scriptId: string }>(

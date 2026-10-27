@@ -4,7 +4,7 @@ import { composeVideoPrompt, getVideoModel } from "@vimax/contracts";
 import { eq } from "drizzle-orm";
 import { config } from "../../config/env.js";
 import { buildVideoCacheKey } from "../canvas/cache-keys.js";
-import { resolveVideoModel } from "../canvas/node-executor.service.js";
+import { resolveVideoFallbackModels, resolveVideoModel } from "../canvas/node-executor.service.js";
 import { collectReferenceSha256s, findCachedJob } from "../image/cache.service.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { jobEvents, jobs } from "../../infrastructure/db/schema.js";
@@ -67,7 +67,7 @@ export async function generateVideo(input: VideoGenerateInput): Promise<VideoGen
   }
 
   const resolved = await resolveVideoModel(input.model_id);
-  const apiKey = resolved.api_key ?? config.arkApiKey();
+  const apiKey = resolved.api_key ?? config.apiKeyFor(resolved.provider);
   if (!apiKey) {
     throw new Error("provider.invalid_key");
   }
@@ -96,6 +96,7 @@ export async function generateVideo(input: VideoGenerateInput): Promise<VideoGen
       base_url: resolved.base_url,
       model: resolved.model,
     },
+    fallback_credentials: await resolveVideoFallbackModels(resolved.id),
     input: {
       prompt,
       first_frame_storage_key: refAssets[0]?.storageKey,

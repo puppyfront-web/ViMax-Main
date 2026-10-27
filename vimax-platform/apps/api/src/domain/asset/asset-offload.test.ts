@@ -22,3 +22,17 @@ test("resolveOffloadPolicy: 用户手动上云的资产受保护", () => {
     { action: "skip", reason: "upload_protected" },
   );
 });
+
+test("resolveOffloadPolicy: 下游节点未完成 → 跳过删除（管线还要读这个二进制）", () => {
+  assert.deepEqual(
+    resolveOffloadPolicy({ source: "generated", offloadedAt: null }, true),
+    { action: "skip", reason: "downstream_pending" },
+  );
+});
+
+test("resolveOffloadPolicy: 下游全部完成 → 正常删除", () => {
+  assert.deepEqual(
+    resolveOffloadPolicy({ source: "generated", offloadedAt: null }, false),
+    { action: "offload" },
+  );
+});

@@ -93,7 +93,8 @@ export type ServerWsMessage =
   | { type: "pipeline.stage_progress"; runId: string; canvasId: string; stage: PipelineStage; done: number; total: number }
   | { type: "pipeline.stage_done"; runId: string; canvasId: string; stage: PipelineStage }
   | { type: "pipeline.node_failed"; runId: string; canvasId: string; stage: PipelineStage; nodeId: string; error: string }
-  | { type: "pipeline.finished"; runId: string; canvasId: string; summary: { succeeded: number; failed: number; cancelled?: boolean } }
+  | { type: "pipeline.node_skipped"; runId: string; canvasId: string; stage: PipelineStage; nodeId: string; reason: string }
+  | { type: "pipeline.finished"; runId: string; canvasId: string; summary: { succeeded: number; failed: number; skipped?: number; cancelled?: boolean; message?: string } }
   // Reuse existing job progress events via WebSocket
   | { type: "job.progress"; jobId: string; progress: number }
   | { type: "job.completed"; jobId: string; outputAssetId: string }

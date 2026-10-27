@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { PipelineStage } from "@vimax/contracts";
 import { DEFAULT_NEGATIVE_PROMPT } from "@vimax/contracts";
 import { getDb } from "../../infrastructure/db/client.js";
+import { config } from "../../config/env.js";
 import { canvasEdges, canvasNodes, jobs } from "../../infrastructure/db/schema.js";
 import { broadcastToRoom } from "../../realtime/connection-manager.js";
 import { inferAutoEdges, subtractEdges } from "./canvas-graph.js";
@@ -27,6 +28,8 @@ export interface AutoPipelineResult {
   run_id: string;
   succeeded: number;
   failed: number;
+  /** 上游未就绪而被跳过的节点（如首帧图失败后的 video）——不是失败。 */
+  skipped: number;
   errors: Array<{ stage: PipelineStage; nodeId?: string; error: string }>;
 }
 
@@ -107,13 +110,14 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
 
   let imageModelId: string | undefined;
   let videoModelId: string | undefined;
+  // DEFAULT_IMAGE_MODEL / DEFAULT_VIDEO_MODEL 优先于 DB 默认（本地免费链路常用）。
   try {
-    imageModelId = (await getDefaultModel("default", "image")).id;
+    imageModelId = config.defaultImageModelId() || (await getDefaultModel("default", "image")).id;
   } catch {
     /* optional */
   }
   try {
-    videoModelId = (await getDefaultModel("default", "video")).id;
+    videoModelId = config.defaultVideoModelId() || (await getDefaultModel("default", "video")).id;
   } catch {
     /* optional */
   }
@@ -151,7 +155,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
           data: {
             prompt: data.ffDesc ?? "cinematic frame",
             negativePrompt: DEFAULT_NEGATIVE_PROMPT,
-            modelId: imageModelId ?? "doubao-seedream-4-0",
+            modelId: imageModelId ?? (config.defaultImageModelId() || "doubao-seedream-4-0"),
             size: "1024x1024",
             status: "idle",
           },
@@ -191,7 +195,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
           data: {
             motionPreset: "zoom_in",
             durationSec: 4,
-            modelId: videoModelId ?? "doubao-seedance-1-0-lite",
+            modelId: videoModelId ?? (config.defaultVideoModelId() || "doubao-seedance-1-0-lite"),
             negativePrompt: DEFAULT_NEGATIVE_PROMPT,
             status: "idle",
           },
@@ -236,7 +240,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
           data: {
             motionPreset: "zoom_in",
             durationSec: 4,
-            modelId: videoModelId ?? "doubao-seedance-1-0-lite",
+            modelId: videoModelId ?? (config.defaultVideoModelId() || "doubao-seedance-1-0-lite"),
             negativePrompt: DEFAULT_NEGATIVE_PROMPT,
             status: "idle",
           },
@@ -265,6 +269,7 @@ async function ensureProductionChain(canvasId: string): Promise<void> {
   const inferred = inferAutoEdges(
     allNodes.map((n) => ({ id: n.id, type: n.type as never })),
     randomUUID,
+    existingEdgeKeys,
   );
   const toAdd = subtractEdges(inferred, existingEdgeKeys);
   for (const e of toAdd) {
@@ -393,28 +398,41 @@ async function runNodesInOrder(
   runId: string,
   stage: PipelineStage,
   signal?: AbortSignal,
-): Promise<{ succeeded: number; failed: number; errors: AutoPipelineResult["errors"] }> {
+  jobTimeoutMs = 600_000,
+): Promise<{ succeeded: number; failed: number; skipped: number; errors: AutoPipelineResult["errors"] }> {
   let succeeded = 0;
   let failed = 0;
+  let skipped = 0;
   const errors: AutoPipelineResult["errors"] = [];
   const queue = [...nodeIds];
 
   async function runOne(nodeId: string): Promise<void> {
     try {
       const result = await runNode({ canvas_id: canvasId, node_id: nodeId });
-      const status = await waitForJob(result.job_id, signal);
+      const status = await waitForJob(result.job_id, signal, jobTimeoutMs);
       if (status === "succeeded") succeeded++;
       else {
         failed++;
         errors.push({ stage, nodeId, error: "job failed" });
       }
     } catch (err) {
+      // 上游无产物（首帧图失败后的 video、片段缺失后的 concat）在入队前
+      // 就同步抛 needs_upstream —— 归类为跳过，不当失败噪音。
+      const msg = err instanceof Error ? err.message : "unknown";
+      if (msg.includes("needs_upstream")) {
+        skipped++;
+        emit(canvasId, runId, {
+          type: "pipeline.node_skipped",
+          runId,
+          canvasId,
+          stage,
+          nodeId,
+          reason: msg,
+        });
+        return;
+      }
       failed++;
-      errors.push({
-        stage,
-        nodeId,
-        error: err instanceof Error ? err.message : "unknown",
-      });
+      errors.push({ stage, nodeId, error: msg });
     }
   }
 
@@ -453,7 +471,7 @@ async function runNodesInOrder(
     stage,
   });
 
-  return { succeeded, failed, errors };
+  return { succeeded, failed, skipped, errors };
 }
 
 /**
@@ -488,6 +506,7 @@ export async function runAutoPipelineAsync(
   const errors: AutoPipelineResult["errors"] = [];
   let succeeded = 0;
   let failed = 0;
+  let skipped = 0;
 
   try {
     const db = getDb();
@@ -591,15 +610,17 @@ export async function runAutoPipelineAsync(
     const videos = allNodes.filter((n) => n.type === "video").map((n) => n.id);
     const concats = allNodes.filter((n) => n.type === "concat").map((n) => n.id);
 
-    const stages: Array<[PipelineStage, string[]]> = [
-      ["image", images],
-      ["video", videos],
+    // 免费视频档偶发排队/重提，单个视频 job 的等待上限远大于图片。
+    const VIDEO_JOB_TIMEOUT_MS = 1_800_000;
+    const stages: Array<[PipelineStage, string[], number]> = [
+      ["image", images, 600_000],
+      ["video", videos, VIDEO_JOB_TIMEOUT_MS],
     ];
     if (concats.length > 0 && videos.length > 1) {
-      stages.push(["concat", concats]);
+      stages.push(["concat", concats, 600_000]);
     }
 
-    for (const [stage, ids] of stages) {
+    for (const [stage, ids, jobTimeoutMs] of stages) {
       if (ids.length === 0) continue;
       const result = await runNodesInOrder(
         canvasId,
@@ -608,33 +629,67 @@ export async function runAutoPipelineAsync(
         runId,
         stage,
         signal,
+        jobTimeoutMs,
       );
       succeeded += result.succeeded;
       failed += result.failed;
+      skipped += result.skipped;
       errors.push(...result.errors);
     }
 
-    const summary = { succeeded, failed };
+    const summary = {
+      succeeded,
+      failed,
+      skipped,
+      message: buildPipelineSummaryMessage({ succeeded, failed, skipped }),
+    };
     emit(canvasId, runId, {
       type: "pipeline.finished",
       runId,
       canvasId,
       summary,
     });
-    return { run_id: runId, succeeded, failed, errors };
+    return { run_id: runId, succeeded, failed, skipped, errors };
   } catch (err) {
     if (err instanceof Error && err.message === "pipeline.cancelled") {
       emit(input.canvas_id, runId, {
         type: "pipeline.finished",
         runId,
         canvasId: input.canvas_id,
-        summary: { succeeded, failed, cancelled: true },
+        summary: {
+          succeeded,
+          failed,
+          skipped,
+          cancelled: true,
+          message: buildPipelineSummaryMessage({ succeeded, failed, skipped, cancelled: true }),
+        },
       });
     }
     throw err;
   } finally {
     activeRuns.delete(runId);
   }
+}
+
+/** 管线结束的用户可读摘要：成功 congratulation / 失败给行动指引。 */
+function buildPipelineSummaryMessage(s: {
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  cancelled?: boolean;
+}): string {
+  if (s.cancelled) return `已停止：完成 ${s.succeeded} 项，失败 ${s.failed} 项。`;
+  if (s.failed === 0 && s.skipped === 0) {
+    return `全部 ${s.succeeded} 项生成完成 🎉`;
+  }
+  const parts = [`完成 ${s.succeeded} 项`];
+  if (s.failed > 0) parts.push(`失败 ${s.failed} 项`);
+  if (s.skipped > 0) parts.push(`跳过 ${s.skipped} 项（上游未就绪）`);
+  return (
+    `${parts.join("，")}。失败/跳过的节点已保留在画布上，可点「重试失败项」重跑；` +
+    `若为免费视频模型容量不足（1305），建议在「设置 → 模型配置」添加备用视频模型，` +
+    `之后系统会在容量失败时自动切换。`
+  );
 }
 
 export function startAutoPipeline(input: AutoPipelineInput): string {

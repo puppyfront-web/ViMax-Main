@@ -16,8 +16,8 @@ import type {
 } from "@vimax/contracts";
 import { composeImagePrompt, getImageModel, getMotionPreset, getVideoModel, getVideoAspectRatio, getVideoStylePreset, DEFAULT_TTS_MODEL } from "@vimax/contracts";
 import { KEY_LIGHT_POSITIONS, RIM_LIGHT_PRESETS, AMBIENT_LIGHT_OPTIONS } from "@vimax/contracts";
-import { getDefaultModel, getModelById } from "../model/model.service.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { getDefaultModel, getModelById, getModels } from "../model/model.service.js";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import { config } from "../../config/env.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { assets, canvasEdges, canvasNodes, canvases, jobEvents, jobs } from "../../infrastructure/db/schema.js";
@@ -82,12 +82,15 @@ async function assertNoInFlightNodeJob(
   nodeId: string,
 ): Promise<void> {
   const db = getDb();
+  // 只认近期 job：worker/宿主崩溃会留下永远 running 的僵尸行，不能让
+  // 它永久堵死节点重跑。45 分钟覆盖最长的合法 video job（30 分钟上限）。
   const [inFlight] = await db
     .select({ id: jobs.id, jobType: jobs.jobType })
     .from(jobs)
     .where(
       and(
         inArray(jobs.status, ["queued", "running"]),
+        gt(jobs.queuedAt, new Date(Date.now() - 45 * 60 * 1000)),
         sql`input_snapshot->'_variant' IS NULL`,
         sql`input_snapshot->'_canvas'->>'canvas_id' = ${canvasId}`,
         sql`input_snapshot->'_canvas'->>'node_id' = ${nodeId}`,
@@ -300,6 +303,33 @@ export async function runAllDirty(
   return { enqueued, skipped };
 }
 
+/** 一键重跑画布上所有 failed 节点（僵尸 job 由 45 分钟时效防护放行）。 */
+export async function runAllFailed(
+  canvasId: string,
+): Promise<{ enqueued: string[]; skipped: string[] }> {
+  const { nodes } = await loadCanvasRuntime(canvasId);
+  const failedIds = [...nodes.values()]
+    .filter((n) => n.status === "failed")
+    .map((n) => n.id);
+
+  const enqueued: string[] = [];
+  const skipped: string[] = [];
+  for (const nodeId of failedIds) {
+    try {
+      await runNode({ canvas_id: canvasId, node_id: nodeId });
+      enqueued.push(nodeId);
+    } catch (err) {
+      // 常见拒因：job_in_flight（刚失败还占着窗口）、上游未就绪
+      skipped.push(nodeId);
+      console.error(
+        `[runAllFailed] failed to run node ${nodeId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+  return { enqueued, skipped };
+}
+
 // ── Variants: N independent generations of an image node ───────────
 
 /**
@@ -324,28 +354,28 @@ export async function runVariants(
   }
 
   const data = node.data as ImageNodeData;
-  const model = await resolveImageModel(data.modelId);
-  if (!model) throw new Error("input.unsupported_model");
 
   const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
 
   const upstreamAssetIds = await collectUpstreamAssetIds(canvasId, nodeId);
   const refAssetIds = [...upstreamAssetIds, ...(data.referenceAssetIds ?? [])];
   const mode = refAssetIds.length > 0 ? "i2i" : "t2i";
+  const model = await resolveImageModelForMode(data.modelId, mode);
   if (mode === "i2i" && !model.supports_reference) {
     throw new Error("input.unsupported_model");
   }
+  const modelId = model.id;
 
   const { sha256s } = await collectReferenceSha256s(refAssetIds);
   const baseCacheKey = buildImageCacheKey({
     mode,
     prompt: effectivePrompt,
-    model_id: data.modelId,
+    model_id: modelId,
     size: data.size as ImageSize,
     reference_sha256s: sha256s,
   });
 
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   await setNodeStatus(canvasId, nodeId, "running");
@@ -366,7 +396,7 @@ export async function runVariants(
     const inputSnapshot = {
       mode,
       prompt: effectivePrompt,
-      model_id: data.modelId,
+      model_id: modelId,
       size: data.size,
       reference_asset_ids: refAssetIds,
       _canvas: { canvas_id: canvasId, node_id: nodeId },
@@ -391,7 +421,7 @@ export async function runVariants(
     await enqueueImageJob({
       job_id: jobId,
       job_type: jobType,
-      model_id: data.modelId,
+      model_id: modelId,
       credential: {
         class_path: model.class_path,
         api_key: apiKey,
@@ -521,14 +551,19 @@ async function getTenantIdForCanvas(canvasId: string): Promise<string> {
   return canvas?.tenantId ?? "default";
 }
 
-export async function resolveImageModel(modelId?: string): Promise<{
-  id: string; class_path: string; base_url?: string; model?: string;
+export interface ResolvedImageModel {
+  id: string; class_path: string; base_url?: string; model?: string; provider?: string;
   sizes?: string[]; supports_reference?: boolean; api_key?: string;
-}> {
+}
+
+export async function resolveImageModel(modelId?: string): Promise<ResolvedImageModel> {
   let resolved: {
-    id: string; class_path?: string; base_url?: string; model?: string;
+    id: string; class_path?: string; base_url?: string; model?: string; provider?: string;
     sizes?: string[]; supports_reference?: boolean; api_key?: string;
   } | undefined;
+
+  // DEFAULT_IMAGE_MODEL 覆盖“未指定模型”时的默认档（本地免费链路常用）。
+  if (!modelId) modelId = config.defaultImageModelId() || undefined;
 
   // DB lookup first
   if (modelId) {
@@ -540,6 +575,7 @@ export async function resolveImageModel(modelId?: string): Promise<{
         class_path: (dbModel.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
         base_url: (dbModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
         model: (dbModel.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+        provider: dbModel.provider,
         sizes: cfg.sizes as string[] | undefined,
         supports_reference: cfg.supports_reference as boolean | undefined,
         api_key: dbModel.apiKey ?? undefined,
@@ -550,6 +586,7 @@ export async function resolveImageModel(modelId?: string): Promise<{
         resolved = {
           id: hc.id, class_path: hc.class_path,
           base_url: hc.init_args?.base_url, model: hc.init_args?.model,
+          provider: hc.provider,
           sizes: hc.sizes, supports_reference: hc.supports_reference,
         };
       }
@@ -565,6 +602,7 @@ export async function resolveImageModel(modelId?: string): Promise<{
       class_path: (def.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
       base_url: (def.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
       model: (def.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+      provider: def.provider,
       sizes: cfg.sizes as string[] | undefined, supports_reference: cfg.supports_reference as boolean | undefined,
       api_key: def.apiKey ?? undefined,
     };
@@ -578,10 +616,39 @@ export async function resolveImageModel(modelId?: string): Promise<{
   return { ...rest, class_path };
 }
 
+/**
+ * Mode-aware image model resolution: an i2i job (references/edit ops) needs a
+ * reference-capable model. When the selected/default model lacks the
+ * capability, fall back to DEFAULT_I2I_IMAGE_MODEL (free pipeline:
+ * cogview-3-flash → modelscope-qwen-image-edit). Returns the original model
+ * unchanged when no capable fallback is configured — callers keep their
+ * supports_reference guard for the error case.
+ */
+export async function resolveImageModelForMode(
+  modelId: string | undefined,
+  mode: "t2i" | "i2i",
+  resolve: (id?: string) => Promise<ResolvedImageModel> = resolveImageModel,
+): Promise<ResolvedImageModel> {
+  const model = await resolve(modelId);
+  if (mode !== "i2i" || model.supports_reference) return model;
+
+  const fallbackId = config.defaultI2IImageModelId();
+  if (fallbackId && fallbackId !== model.id) {
+    const fallback = await resolve(fallbackId);
+    if (fallback.supports_reference) {
+      return fallback;
+    }
+  }
+  return model;
+}
+
 export async function resolveVideoModel(modelId?: string): Promise<{
-  id: string; class_path?: string; base_url?: string; model?: string;
+  id: string; class_path?: string; base_url?: string; model?: string; provider?: string;
   maxDuration?: number; resolutions?: string[]; api_key?: string;
 }> {
+  // DEFAULT_VIDEO_MODEL 覆盖“未指定模型”时的默认档（本地免费链路常用）。
+  if (!modelId) modelId = config.defaultVideoModelId() || undefined;
+
   if (modelId) {
     const dbModel = await getModelById(modelId);
     if (dbModel) {
@@ -591,6 +658,7 @@ export async function resolveVideoModel(modelId?: string): Promise<{
         class_path: (dbModel.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
         base_url: (dbModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
         model: (dbModel.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+        provider: dbModel.provider,
         api_key: dbModel.apiKey ?? undefined,
       };
     }
@@ -600,6 +668,7 @@ export async function resolveVideoModel(modelId?: string): Promise<{
     if (hc) return {
       id: hc.id, class_path: hc.class_path,
       base_url: hc.init_args?.base_url, model: hc.init_args?.model,
+      provider: hc.provider,
     };
   }
   const def = await getDefaultModel("default", "video");
@@ -608,8 +677,87 @@ export async function resolveVideoModel(modelId?: string): Promise<{
     id: def.id, class_path: (def.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
     base_url: (def.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
     model: (def.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+    provider: def.provider,
     api_key: def.apiKey ?? undefined,
   };
+}
+
+/**
+ * 备用视频模型链：主模型容量类失败（免费档拥堵/限流）时依次降级。
+ * 取启用且 key 可解析（DB 内联或 provider env 回退）的其他 video 模型，
+ * priority 高的优先，最多 2 个。
+ */
+export async function resolveVideoFallbackModels(
+  primaryId?: string,
+  limit = 2,
+): Promise<NonNullable<VideoJobPayload["fallback_credentials"]>> {
+  try {
+    const all = await getModels("default", "video");
+    return all
+      .filter((m) => m.id !== primaryId)
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      .map((m) => {
+        const initArgs = ((m.config as Record<string, unknown>).init_args as Record<string, string> | undefined) ?? {};
+        return {
+          class_path: m.classPath,
+          base_url: m.baseUrl ?? initArgs.base_url,
+          model: m.vendorModelId ?? initArgs.model,
+          api_key: (m.apiKey ?? config.apiKeyFor(m.provider)).trim(),
+          label: m.name,
+        };
+      })
+      .filter((c) => c.class_path && c.api_key)
+      .slice(0, limit)
+      .map((c) => ({
+        class_path: c.class_path!,
+        api_key: c.api_key,
+        base_url: c.base_url,
+        model: c.model,
+        label: c.label,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 备用图像模型链：与 resolveVideoFallbackModels 同构。needReference 时
+ * 只保留支持参考图的档位（i2i 任务的能力约束）。
+ */
+export async function resolveImageFallbackModels(
+  primaryId?: string,
+  needReference = false,
+  limit = 2,
+): Promise<NonNullable<ImageJobPayload["fallback_credentials"]>> {
+  try {
+    const all = await getModels("default", "image");
+    return all
+      .filter((m) => m.id !== primaryId)
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      .map((m) => {
+        const cfg = m.config as Record<string, unknown>;
+        const initArgs = (cfg.init_args as Record<string, string> | undefined) ?? {};
+        return {
+          class_path: m.classPath,
+          base_url: m.baseUrl ?? initArgs.base_url,
+          model: m.vendorModelId ?? initArgs.model,
+          api_key: (m.apiKey ?? config.apiKeyFor(m.provider)).trim(),
+          label: m.name,
+          supports_reference: cfg.supports_reference === true,
+        };
+      })
+      .filter((c) => c.class_path && c.api_key && (!needReference || c.supports_reference))
+      .slice(0, limit)
+      .map((c) => ({
+        class_path: c.class_path!,
+        api_key: c.api_key,
+        base_url: c.base_url,
+        model: c.model,
+        label: c.label,
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve one asset's storage key (edit/text/compliance operate on it). */
@@ -649,8 +797,19 @@ async function dispatchImageJob(
   const queueName = "q.image.std";
   const parentTrace = currentTraceparent();
 
+  // image.text / image.compliance 不调用生成模型，无需备用链；带参考图或
+  // 编辑操作的任务降级时也必须落在支持参考图的档位上。
+  const needsFallback =
+    args.jobType !== "image.text" && args.jobType !== "image.compliance";
+  const needReference = Boolean(
+    args.payload.input.reference_storage_keys?.length || args.payload.input.source_storage_key,
+  );
+
   const payload: ImageJobPayload = {
     ...args.payload,
+    ...(needsFallback
+      ? { fallback_credentials: await resolveImageFallbackModels(args.payload.model_id, needReference) }
+      : {}),
     callback: {
       event_channel: jobEventChannel(jobId),
       upload_bucket: getBucket(),
@@ -705,9 +864,6 @@ async function runImageNode(
   if (data.textLayers?.length) return runImageTextJob(node, data);
   if (data.editOp) return runImageEditJob(node, data, upstreamAssetIds);
 
-  const model = await resolveImageModel(data.modelId);
-  const modelId = data.modelId ?? model.id;
-
   // E-commerce/creative kind preset augments the prompt (and the cache key).
   const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
 
@@ -719,6 +875,8 @@ async function runImageNode(
 
   // Check if i2i mode is needed (implied by having references)
   const mode = refAssetIds.length > 0 ? "i2i" : "t2i";
+  const model = await resolveImageModelForMode(data.modelId, mode);
+  const modelId = model.id;
 
   if (mode === "i2i" && !model.supports_reference) {
     throw new Error("input.unsupported_model");
@@ -739,7 +897,7 @@ async function runImageNode(
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Store canvas context in input_snapshot so the completion handler
@@ -805,8 +963,8 @@ async function runImageEditJob(
   data: ImageNodeData,
   upstreamAssetIds: string[],
 ): Promise<NodeRunOutput> {
-  const model = await resolveImageModel(data.modelId);
-  const modelId = data.modelId ?? model.id;
+  const model = await resolveImageModelForMode(data.modelId, "i2i");
+  const modelId = model.id;
   if (!model.supports_reference) throw new Error("input.unsupported_model");
 
   const sourceId = await resolveSourceAssetId(data, upstreamAssetIds);
@@ -837,7 +995,7 @@ async function runImageEditJob(
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const inputSnapshot = {
@@ -1007,7 +1165,7 @@ async function runCharacterNode(
 
   const tenantId = await getTenantIdForCanvas(node.canvasId);
   const model = await resolveImageModel(undefined); // default image model
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Content-based cache: same character brief → reuse the prior portrait.
@@ -1168,8 +1326,8 @@ async function runShotNode(
     .filter(Boolean)
     .join(" ");
 
-  const model = await resolveImageModel(undefined); // default image model
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const model = await resolveImageModelForMode(undefined, mode); // default image model (i2i-capable for reference shots)
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Content-based cache: same shot brief + lighting + references → reuse.
@@ -1371,7 +1529,7 @@ async function runVideoNode(
 
   // Resolve video model
   const videoModel = await resolveVideoModel(data.modelId);
-  const apiKey = videoModel?.api_key ?? config.arkApiKey();
+  const apiKey = videoModel?.api_key ?? config.apiKeyFor(videoModel?.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Content-based cache: an identical re-run (same model, prompt, frames,
@@ -1440,6 +1598,7 @@ async function runVideoNode(
       base_url: videoModel?.base_url ?? "https://yunwu.ai/volc/v1",
       model: videoModel?.model ?? "doubao-seedance-1-0-lite-t2v-250428",
     },
+    fallback_credentials: await resolveVideoFallbackModels(videoModel?.id),
     input: {
       prompt,
       first_frame_storage_key: firstFrameKey,
@@ -1620,7 +1779,7 @@ export async function runCharacterView(
 
   const data = node.data as CharacterNodeData;
   const model = await resolveImageModel(undefined);
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const refAssetIds: string[] = [];
@@ -1797,7 +1956,7 @@ export async function runMultiCameraGrid(
   const count = gridSize === "3x3" ? 9 : 25;
   const cols = gridSize === "3x3" ? 3 : 5;
   const model = await resolveImageModel(undefined);
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const upstreamAssetIds = await collectUpstreamAssetIds(canvasId, nodeId);
@@ -1893,7 +2052,7 @@ export async function runMotionPrediction(
 
   // Resolve video model first to get its api_key
   const videoModel = await resolveVideoModel(undefined);
-  const apiKey = videoModel?.api_key ?? config.arkApiKey();
+  const apiKey = videoModel?.api_key ?? config.apiKeyFor(videoModel?.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const videoNodeId = randomUUID();
@@ -2443,7 +2602,7 @@ export async function runCharacterPortraits(
   if (!data.name?.trim()) throw new Error("canvas.character_empty");
 
   const imageModel = await resolveImageModel(undefined);
-  const apiKey = imageModel.api_key ?? config.arkApiKey();
+  const apiKey = imageModel.api_key ?? config.apiKeyFor(imageModel.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const jobId = randomUUID();

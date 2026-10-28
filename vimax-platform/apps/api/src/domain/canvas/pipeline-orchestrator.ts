@@ -34,6 +34,14 @@ export interface AutoPipelineResult {
 }
 
 const activeRuns = new Map<string, AbortController>();
+// 画布级运行锁：同一画布同时只允许一条出片管线，并发点击/重试会因
+// 节点在途任务互相碰撞（job_in_flight）而全部失败。
+const activeCanvasRuns = new Map<string, string>();
+
+/** 该画布是否已有管线在跑，返回在跑的 runId。 */
+export function activePipelineRun(canvasId: string): string | null {
+  return activeCanvasRuns.get(canvasId) ?? null;
+}
 
 export function cancelAutoPipeline(runId: string): void {
   activeRuns.get(runId)?.abort();
@@ -501,6 +509,7 @@ export async function runAutoPipelineAsync(
 ): Promise<AutoPipelineResult> {
   const ac = new AbortController();
   activeRuns.set(runId, ac);
+  activeCanvasRuns.set(input.canvas_id, runId);
   const signal = ac.signal;
   const concurrency = input.concurrency ?? 2;
   const errors: AutoPipelineResult["errors"] = [];
@@ -651,23 +660,30 @@ export async function runAutoPipelineAsync(
     });
     return { run_id: runId, succeeded, failed, skipped, errors };
   } catch (err) {
-    if (err instanceof Error && err.message === "pipeline.cancelled") {
-      emit(input.canvas_id, runId, {
-        type: "pipeline.finished",
-        runId,
-        canvasId: input.canvas_id,
-        summary: {
-          succeeded,
-          failed,
-          skipped,
-          cancelled: true,
-          message: buildPipelineSummaryMessage({ succeeded, failed, skipped, cancelled: true }),
-        },
-      });
-    }
+    // 无论取消还是中途崩溃，都必须给客户端发结束事件——否则前端管线
+    // 状态永远停在"running"，按钮转圈到天荒地老。
+    const cancelled = err instanceof Error && err.message === "pipeline.cancelled";
+    const message = cancelled
+      ? buildPipelineSummaryMessage({ succeeded, failed, skipped, cancelled: true })
+      : `出片中断：${err instanceof Error ? err.message : "未知错误"}`;
+    emit(input.canvas_id, runId, {
+      type: "pipeline.finished",
+      runId,
+      canvasId: input.canvas_id,
+      summary: {
+        succeeded,
+        failed,
+        skipped,
+        cancelled,
+        message,
+      },
+    });
     throw err;
   } finally {
     activeRuns.delete(runId);
+    if (activeCanvasRuns.get(input.canvas_id) === runId) {
+      activeCanvasRuns.delete(input.canvas_id);
+    }
   }
 }
 
@@ -693,6 +709,10 @@ function buildPipelineSummaryMessage(s: {
 }
 
 export function startAutoPipeline(input: AutoPipelineInput): string {
+  const existing = activePipelineRun(input.canvas_id);
+  if (existing) {
+    throw new Error(`pipeline.already_running:${existing}`);
+  }
   const runId = randomUUID();
   void runAutoPipelineAsync(runId, input).catch((err) => {
     console.error("[pipeline] run failed:", err);

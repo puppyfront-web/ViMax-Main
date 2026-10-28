@@ -234,7 +234,12 @@ export function CanvasShell() {
             toast.error("请先创建剧本节点");
             return;
           }
-          void startAutoPipeline(script.id);
+          startAutoPipeline(script.id).catch((err: unknown) => {
+            const msg = (err as Error).message || "启动失败";
+            toast.error(
+              msg.includes("already_running") ? "该画布已有出片任务在运行，请等待完成" : msg.slice(0, 80),
+            );
+          });
         }}
         onRegenerate={() => {
           const script = nodes.find((n) => n.type === "script");

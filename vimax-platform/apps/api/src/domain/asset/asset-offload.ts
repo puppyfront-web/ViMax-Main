@@ -1,6 +1,6 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { getDb } from "../../infrastructure/db/client.js";
-import { assets } from "../../infrastructure/db/schema.js";
+import { assets, canvasEdges, canvasNodes } from "../../infrastructure/db/schema.js";
 import { deleteObject } from "../../infrastructure/storage/s3.js";
 
 // ── 本地化存储策略 ────────────────────────────────────────────────
@@ -12,15 +12,39 @@ import { deleteObject } from "../../infrastructure/storage/s3.js";
 
 export type OffloadDecision =
   | { action: "offload" }
-  | { action: "skip"; reason: "already_offloaded" | "upload_protected" };
+  | { action: "skip"; reason: "already_offloaded" | "upload_protected" | "downstream_pending" };
 
-export function resolveOffloadPolicy(asset: {
-  source: string;
-  offloadedAt: Date | null;
-}): OffloadDecision {
+export function resolveOffloadPolicy(
+  asset: {
+    source: string;
+    offloadedAt: Date | null;
+  },
+  downstreamPending = false,
+): OffloadDecision {
   if (asset.offloadedAt !== null) return { action: "skip", reason: "already_offloaded" };
   if (asset.source === "upload") return { action: "skip", reason: "upload_protected" };
+  if (downstreamPending) return { action: "skip", reason: "downstream_pending" };
   return { action: "offload" };
+}
+
+/**
+ * 资产生产节点的直接下游消费节点状态（image→video→concat 各一跳）。
+ * 管线尚未跑到的下游是 idle，正在跑是 running——这些节点的 job 随时
+ * 要从对象存储读这个二进制，删了就是 404。
+ */
+async function downstreamStatuses(assetId: string): Promise<string[]> {
+  const db = getDb();
+  const producers = await db
+    .select({ id: canvasNodes.id })
+    .from(canvasNodes)
+    .where(eq(canvasNodes.outputAssetId, assetId));
+  if (producers.length === 0) return [];
+  const consumers = await db
+    .select({ status: canvasNodes.status })
+    .from(canvasEdges)
+    .innerJoin(canvasNodes, eq(canvasNodes.id, canvasEdges.targetNodeId))
+    .where(inArray(canvasEdges.sourceNodeId, producers.map((p) => p.id)));
+  return consumers.map((c) => c.status);
 }
 
 /** 客户端确认本地落库后，删除远端二进制并记录时间。幂等。 */
@@ -35,7 +59,10 @@ export async function offloadAsset(assetId: string) {
     throw new Error("input.asset_not_found");
   }
 
-  const decision = resolveOffloadPolicy(asset);
+  // 强防护：任何非 done 的下游（含 idle/running/failed/dirty）都保留
+  // 二进制——failed 也要保，手动重跑是常态；遗弃链由 TTL 清扫兜底。
+  const statuses = await downstreamStatuses(assetId);
+  const decision = resolveOffloadPolicy(asset, statuses.some((s) => s !== "done"));
   if (decision.action === "skip") {
     return { asset_id: assetId, offloaded: false, reason: decision.reason };
   }
@@ -63,6 +90,9 @@ export async function sweepGeneratedAssets(ttlHours: number, batchSize = 500) {
 
   let swept = 0;
   for (const asset of stale) {
+    // 弱防护：清扫只避让正在执行的下游（超长管线中途不能断粮）；
+    // idle/failed 的遗弃链到点即清，不无限占用云端。
+    if ((await downstreamStatuses(asset.id)).includes("running")) continue;
     await deleteObject(asset.storageKey);
     const updated = await db
       .update(assets)

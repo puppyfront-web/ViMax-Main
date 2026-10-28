@@ -20,6 +20,20 @@ dependencies = [
     "google-genai>=1.0.0",
 ]
 
+[project.optional-dependencies]
+# Agent 桥接（VIMAX_ROOT 挂载的 ViMax 框架）运行期导入所需的最小第三方集
+vimax-agents = [
+    "langchain>=0.3.26",
+    "langchain-community>=0.3.27",
+    "langchain-openai>=0.3.27",
+    "scenedetect>=0.6.7",
+    "langchain-text-splitters",
+    "openai>=1.95.0",
+    "moviepy>=2.2.1",
+    "tenacity>=8.2.0",
+    "chardet>=5.2.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["vimax_image_worker"]
 

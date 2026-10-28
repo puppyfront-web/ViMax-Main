@@ -63,7 +63,7 @@ export interface MessageReference {
 
 // ── WebSocket Message Protocol ──────────────────────────────────────
 
-export type PipelineStage = "storyboard" | "shot" | "image" | "video" | "concat";
+export type PipelineStage = "characters" | "storyboard" | "shot" | "image" | "video" | "concat";
 
 /** Client → Server messages */
 export type ClientWsMessage =
@@ -93,7 +93,8 @@ export type ServerWsMessage =
   | { type: "pipeline.stage_progress"; runId: string; canvasId: string; stage: PipelineStage; done: number; total: number }
   | { type: "pipeline.stage_done"; runId: string; canvasId: string; stage: PipelineStage }
   | { type: "pipeline.node_failed"; runId: string; canvasId: string; stage: PipelineStage; nodeId: string; error: string }
-  | { type: "pipeline.finished"; runId: string; canvasId: string; summary: { succeeded: number; failed: number; cancelled?: boolean } }
+  | { type: "pipeline.node_skipped"; runId: string; canvasId: string; stage: PipelineStage; nodeId: string; reason: string }
+  | { type: "pipeline.finished"; runId: string; canvasId: string; summary: { succeeded: number; failed: number; skipped?: number; cancelled?: boolean; message?: string } }
   // Reuse existing job progress events via WebSocket
   | { type: "job.progress"; jobId: string; progress: number }
   | { type: "job.completed"; jobId: string; outputAssetId: string }
@@ -113,6 +114,19 @@ export type ServerWsMessage =
   // Nodes were deleted server-side (e.g. pipeline regeneration) — every
   // viewer must drop them (and their edges) from the local graph.
   | { type: "canvas.nodes_removed"; canvasId: string; nodeIds: string[] }
+  // Browser sandbox execution request (run_code tool → T3 Pyodide runner).
+  // The requesting client fetches inputs from its local asset vault,
+  // executes the script in Pyodide, uploads outputs and reports back via
+  // the sandbox.runs.complete tRPC mutation.
+  | {
+      type: "sandbox.run_requested";
+      canvasId: string;
+      runId: string;
+      name: string;
+      language: string;
+      code: string;
+      inputAssetIds: string[];
+    }
   // Realtime presence — the server relays the sender's pointer/selection to
   // everyone else in the canvas room (never echoed back to the sender).
   | {

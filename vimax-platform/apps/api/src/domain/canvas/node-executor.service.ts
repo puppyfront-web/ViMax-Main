@@ -7,15 +7,17 @@ import type {
   NodeRunBatchOutput,
   NodeRunInput,
   NodeRunOutput,
+  PipelineJobPayloadValidated,
+  PipelineJobType,
   VideoJobPayload,
   CharacterNodeData,
   ShotNodeData,
   StoryboardCellNodeData,
 } from "@vimax/contracts";
-import { composeImagePrompt, getImageModel, getMotionPreset, getVideoModel, getVideoAspectRatio, getVideoStylePreset } from "@vimax/contracts";
+import { composeImagePrompt, getImageModel, getMotionPreset, getVideoModel, getVideoAspectRatio, getVideoStylePreset, DEFAULT_TTS_MODEL } from "@vimax/contracts";
 import { KEY_LIGHT_POSITIONS, RIM_LIGHT_PRESETS, AMBIENT_LIGHT_OPTIONS } from "@vimax/contracts";
-import { getDefaultModel, getModelById } from "../model/model.service.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { getDefaultModel, getModelById, getModels } from "../model/model.service.js";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import { config } from "../../config/env.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { assets, canvasEdges, canvasNodes, canvases, jobEvents, jobs } from "../../infrastructure/db/schema.js";
@@ -28,6 +30,7 @@ import {
   enqueueVideoJob,
 } from "../../infrastructure/queue/producer.js";
 import { buildStorageKey, getBucket } from "../../infrastructure/storage/s3.js";
+import { currentTrace, currentTraceparent } from "../../infrastructure/observability/trace.js";
 import {
   buildImageCacheKey,
   collectReferenceSha256s,
@@ -54,6 +57,7 @@ import {
 } from "./shot-decompose.js";
 import { buildConcatCacheKey, buildVideoCacheKey } from "./cache-keys.js";
 import { broadcastNodeStatus } from "./node-status.js";
+import { recordFeedback } from "../feedback/feedback.service.js";
 import { MAX_VARIANTS } from "./variations.js";
 import {
   buildStoryboardUserRequirement,
@@ -78,12 +82,15 @@ async function assertNoInFlightNodeJob(
   nodeId: string,
 ): Promise<void> {
   const db = getDb();
+  // 只认近期 job：worker/宿主崩溃会留下永远 running 的僵尸行，不能让
+  // 它永久堵死节点重跑。45 分钟覆盖最长的合法 video job（30 分钟上限）。
   const [inFlight] = await db
     .select({ id: jobs.id, jobType: jobs.jobType })
     .from(jobs)
     .where(
       and(
         inArray(jobs.status, ["queued", "running"]),
+        gt(jobs.queuedAt, new Date(Date.now() - 45 * 60 * 1000)),
         sql`input_snapshot->'_variant' IS NULL`,
         sql`input_snapshot->'_canvas'->>'canvas_id' = ${canvasId}`,
         sql`input_snapshot->'_canvas'->>'node_id' = ${nodeId}`,
@@ -296,6 +303,33 @@ export async function runAllDirty(
   return { enqueued, skipped };
 }
 
+/** 一键重跑画布上所有 failed 节点（僵尸 job 由 45 分钟时效防护放行）。 */
+export async function runAllFailed(
+  canvasId: string,
+): Promise<{ enqueued: string[]; skipped: string[] }> {
+  const { nodes } = await loadCanvasRuntime(canvasId);
+  const failedIds = [...nodes.values()]
+    .filter((n) => n.status === "failed")
+    .map((n) => n.id);
+
+  const enqueued: string[] = [];
+  const skipped: string[] = [];
+  for (const nodeId of failedIds) {
+    try {
+      await runNode({ canvas_id: canvasId, node_id: nodeId });
+      enqueued.push(nodeId);
+    } catch (err) {
+      // 常见拒因：job_in_flight（刚失败还占着窗口）、上游未就绪
+      skipped.push(nodeId);
+      console.error(
+        `[runAllFailed] failed to run node ${nodeId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+  return { enqueued, skipped };
+}
+
 // ── Variants: N independent generations of an image node ───────────
 
 /**
@@ -320,28 +354,28 @@ export async function runVariants(
   }
 
   const data = node.data as ImageNodeData;
-  const model = await resolveImageModel(data.modelId);
-  if (!model) throw new Error("input.unsupported_model");
 
   const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
 
   const upstreamAssetIds = await collectUpstreamAssetIds(canvasId, nodeId);
   const refAssetIds = [...upstreamAssetIds, ...(data.referenceAssetIds ?? [])];
   const mode = refAssetIds.length > 0 ? "i2i" : "t2i";
+  const model = await resolveImageModelForMode(data.modelId, mode);
   if (mode === "i2i" && !model.supports_reference) {
     throw new Error("input.unsupported_model");
   }
+  const modelId = model.id;
 
   const { sha256s } = await collectReferenceSha256s(refAssetIds);
   const baseCacheKey = buildImageCacheKey({
     mode,
     prompt: effectivePrompt,
-    model_id: data.modelId,
+    model_id: modelId,
     size: data.size as ImageSize,
     reference_sha256s: sha256s,
   });
 
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   await setNodeStatus(canvasId, nodeId, "running");
@@ -349,6 +383,11 @@ export async function runVariants(
 
   const n = Math.max(1, Math.min(count, MAX_VARIANTS));
   const jobIds: string[] = [];
+  const parentTrace = currentTraceparent();
+  const variantsSpan = currentTrace()?.recorder.startSpan("image.enqueue_variants", {
+    node_id: nodeId,
+    count: n,
+  });
   for (let i = 0; i < n; i++) {
     const jobId = randomUUID();
     // Distinct cache key per variant so the dedup layer keeps them apart.
@@ -357,7 +396,7 @@ export async function runVariants(
     const inputSnapshot = {
       mode,
       prompt: effectivePrompt,
-      model_id: data.modelId,
+      model_id: modelId,
       size: data.size,
       reference_asset_ids: refAssetIds,
       _canvas: { canvas_id: canvasId, node_id: nodeId },
@@ -382,7 +421,7 @@ export async function runVariants(
     await enqueueImageJob({
       job_id: jobId,
       job_type: jobType,
-      model_id: data.modelId,
+      model_id: modelId,
       credential: {
         class_path: model.class_path,
         api_key: apiKey,
@@ -401,9 +440,11 @@ export async function runVariants(
       },
       cache_key: cacheKey,
       timeout_ms: 120_000,
+      ...(parentTrace ? { traceparent: parentTrace } : {}),
     });
     jobIds.push(jobId);
   }
+  variantsSpan?.end();
 
   return { jobIds };
 }
@@ -419,6 +460,8 @@ export async function pickVariant(
 ): Promise<void> {
   await setNodeStatus(canvasId, nodeId, "done", assetId);
   broadcastNodeStatus(canvasId, nodeId, "done", assetId);
+  // Implicit positive feedback — the user chose this variant over the rest.
+  void recordFeedback({ canvasId, nodeId, assetId, signal: "pick" }).catch(() => {});
   await markDownstreamDirty(canvasId, nodeId);
   await runReadyDirtyChildren(canvasId, nodeId);
 }
@@ -508,14 +551,19 @@ async function getTenantIdForCanvas(canvasId: string): Promise<string> {
   return canvas?.tenantId ?? "default";
 }
 
-async function resolveImageModel(modelId?: string): Promise<{
-  id: string; class_path: string; base_url?: string; model?: string;
+export interface ResolvedImageModel {
+  id: string; class_path: string; base_url?: string; model?: string; provider?: string;
   sizes?: string[]; supports_reference?: boolean; api_key?: string;
-}> {
+}
+
+export async function resolveImageModel(modelId?: string): Promise<ResolvedImageModel> {
   let resolved: {
-    id: string; class_path?: string; base_url?: string; model?: string;
+    id: string; class_path?: string; base_url?: string; model?: string; provider?: string;
     sizes?: string[]; supports_reference?: boolean; api_key?: string;
   } | undefined;
+
+  // DEFAULT_IMAGE_MODEL 覆盖“未指定模型”时的默认档（本地免费链路常用）。
+  if (!modelId) modelId = config.defaultImageModelId() || undefined;
 
   // DB lookup first
   if (modelId) {
@@ -527,6 +575,7 @@ async function resolveImageModel(modelId?: string): Promise<{
         class_path: (dbModel.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
         base_url: (dbModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
         model: (dbModel.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+        provider: dbModel.provider,
         sizes: cfg.sizes as string[] | undefined,
         supports_reference: cfg.supports_reference as boolean | undefined,
         api_key: dbModel.apiKey ?? undefined,
@@ -537,6 +586,7 @@ async function resolveImageModel(modelId?: string): Promise<{
         resolved = {
           id: hc.id, class_path: hc.class_path,
           base_url: hc.init_args?.base_url, model: hc.init_args?.model,
+          provider: hc.provider,
           sizes: hc.sizes, supports_reference: hc.supports_reference,
         };
       }
@@ -552,6 +602,7 @@ async function resolveImageModel(modelId?: string): Promise<{
       class_path: (def.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
       base_url: (def.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
       model: (def.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+      provider: def.provider,
       sizes: cfg.sizes as string[] | undefined, supports_reference: cfg.supports_reference as boolean | undefined,
       api_key: def.apiKey ?? undefined,
     };
@@ -565,10 +616,39 @@ async function resolveImageModel(modelId?: string): Promise<{
   return { ...rest, class_path };
 }
 
+/**
+ * Mode-aware image model resolution: an i2i job (references/edit ops) needs a
+ * reference-capable model. When the selected/default model lacks the
+ * capability, fall back to DEFAULT_I2I_IMAGE_MODEL (free pipeline:
+ * cogview-3-flash → modelscope-qwen-image-edit). Returns the original model
+ * unchanged when no capable fallback is configured — callers keep their
+ * supports_reference guard for the error case.
+ */
+export async function resolveImageModelForMode(
+  modelId: string | undefined,
+  mode: "t2i" | "i2i",
+  resolve: (id?: string) => Promise<ResolvedImageModel> = resolveImageModel,
+): Promise<ResolvedImageModel> {
+  const model = await resolve(modelId);
+  if (mode !== "i2i" || model.supports_reference) return model;
+
+  const fallbackId = config.defaultI2IImageModelId();
+  if (fallbackId && fallbackId !== model.id) {
+    const fallback = await resolve(fallbackId);
+    if (fallback.supports_reference) {
+      return fallback;
+    }
+  }
+  return model;
+}
+
 export async function resolveVideoModel(modelId?: string): Promise<{
-  id: string; class_path?: string; base_url?: string; model?: string;
+  id: string; class_path?: string; base_url?: string; model?: string; provider?: string;
   maxDuration?: number; resolutions?: string[]; api_key?: string;
 }> {
+  // DEFAULT_VIDEO_MODEL 覆盖“未指定模型”时的默认档（本地免费链路常用）。
+  if (!modelId) modelId = config.defaultVideoModelId() || undefined;
+
   if (modelId) {
     const dbModel = await getModelById(modelId);
     if (dbModel) {
@@ -578,6 +658,7 @@ export async function resolveVideoModel(modelId?: string): Promise<{
         class_path: (dbModel.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
         base_url: (dbModel.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
         model: (dbModel.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+        provider: dbModel.provider,
         api_key: dbModel.apiKey ?? undefined,
       };
     }
@@ -587,6 +668,7 @@ export async function resolveVideoModel(modelId?: string): Promise<{
     if (hc) return {
       id: hc.id, class_path: hc.class_path,
       base_url: hc.init_args?.base_url, model: hc.init_args?.model,
+      provider: hc.provider,
     };
   }
   const def = await getDefaultModel("default", "video");
@@ -595,7 +677,179 @@ export async function resolveVideoModel(modelId?: string): Promise<{
     id: def.id, class_path: (def.classPath ?? cfg.class_path ?? (cfg.init_args as Record<string,string>)?.class_path) as string | undefined,
     base_url: (def.baseUrl ?? cfg.base_url ?? (cfg.init_args as Record<string,string>)?.base_url) as string | undefined,
     model: (def.vendorModelId ?? (cfg.init_args as Record<string,string>)?.model) as string | undefined,
+    provider: def.provider,
     api_key: def.apiKey ?? undefined,
+  };
+}
+
+/**
+ * 备用视频模型链：主模型容量类失败（免费档拥堵/限流）时依次降级。
+ * 取启用且 key 可解析（DB 内联或 provider env 回退）的其他 video 模型，
+ * priority 高的优先，最多 2 个。
+ */
+export async function resolveVideoFallbackModels(
+  primaryId?: string,
+  limit = 2,
+): Promise<NonNullable<VideoJobPayload["fallback_credentials"]>> {
+  try {
+    const all = await getModels("default", "video");
+    return all
+      .filter((m) => m.id !== primaryId)
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      .map((m) => {
+        const initArgs = ((m.config as Record<string, unknown>).init_args as Record<string, string> | undefined) ?? {};
+        return {
+          class_path: m.classPath,
+          base_url: m.baseUrl ?? initArgs.base_url,
+          model: m.vendorModelId ?? initArgs.model,
+          api_key: (m.apiKey ?? config.apiKeyFor(m.provider)).trim(),
+          label: m.name,
+        };
+      })
+      .filter((c) => c.class_path && c.api_key)
+      .slice(0, limit)
+      .map((c) => ({
+        class_path: c.class_path!,
+        api_key: c.api_key,
+        base_url: c.base_url,
+        model: c.model,
+        label: c.label,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 备用图像模型链：与 resolveVideoFallbackModels 同构。needReference 时
+ * 只保留支持参考图的档位（i2i 任务的能力约束）。
+ */
+export async function resolveImageFallbackModels(
+  primaryId?: string,
+  needReference = false,
+  limit = 2,
+): Promise<NonNullable<ImageJobPayload["fallback_credentials"]>> {
+  try {
+    const all = await getModels("default", "image");
+    return all
+      .filter((m) => m.id !== primaryId)
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      .map((m) => {
+        const cfg = m.config as Record<string, unknown>;
+        const initArgs = (cfg.init_args as Record<string, string> | undefined) ?? {};
+        return {
+          class_path: m.classPath,
+          base_url: m.baseUrl ?? initArgs.base_url,
+          model: m.vendorModelId ?? initArgs.model,
+          api_key: (m.apiKey ?? config.apiKeyFor(m.provider)).trim(),
+          label: m.name,
+          supports_reference: cfg.supports_reference === true,
+        };
+      })
+      .filter((c) => c.class_path && c.api_key && (!needReference || c.supports_reference))
+      .slice(0, limit)
+      .map((c) => ({
+        class_path: c.class_path!,
+        api_key: c.api_key,
+        base_url: c.base_url,
+        model: c.model,
+        label: c.label,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** Resolve one asset's storage key (edit/text/compliance operate on it). */
+async function getAssetStorageKey(assetId: string): Promise<string> {
+  const db = getDb();
+  const [asset] = await db
+    .select({ storageKey: assets.storageKey, width: assets.width, height: assets.height })
+    .from(assets)
+    .where(eq(assets.id, assetId))
+    .limit(1);
+  if (!asset) throw new Error("input.asset_not_found");
+  return asset.storageKey;
+}
+
+export async function getAssetSize(assetId: string): Promise<string> {
+  const db = getDb();
+  const [asset] = await db
+    .select({ width: assets.width, height: assets.height })
+    .from(assets)
+    .where(eq(assets.id, assetId))
+    .limit(1);
+  if (asset?.width && asset?.height) return `${asset.width}x${asset.height}`;
+  return "1024x1024";
+}
+
+/** Shared tail of every image-pipeline job: dedup guard, job row, queue. */
+async function dispatchImageJob(
+  node: typeof canvasNodes.$inferSelect,
+  args: {
+    jobType: ImageJobPayload["job_type"];
+    payload: Omit<ImageJobPayload, "callback" | "traceparent">;
+    inputSnapshot: Record<string, unknown>;
+    cacheKey: string;
+  },
+): Promise<NodeRunOutput> {
+  const jobId = args.payload.job_id;
+  const queueName = "q.image.std";
+  const parentTrace = currentTraceparent();
+
+  // image.text / image.compliance 不调用生成模型，无需备用链；带参考图或
+  // 编辑操作的任务降级时也必须落在支持参考图的档位上。
+  const needsFallback =
+    args.jobType !== "image.text" && args.jobType !== "image.compliance";
+  const needReference = Boolean(
+    args.payload.input.reference_storage_keys?.length || args.payload.input.source_storage_key,
+  );
+
+  const payload: ImageJobPayload = {
+    ...args.payload,
+    ...(needsFallback
+      ? { fallback_credentials: await resolveImageFallbackModels(args.payload.model_id, needReference) }
+      : {}),
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("generated", jobId),
+    },
+    ...(parentTrace ? { traceparent: parentTrace } : {}),
+  };
+
+  const db = getDb();
+  await assertNoInFlightNodeJob(node.canvasId, node.id);
+  await db.insert(jobs).values({
+    id: jobId,
+    jobType: args.jobType,
+    queueName,
+    bullmqJobId: jobId,
+    inputSnapshot: args.inputSnapshot,
+    cacheKey: args.cacheKey,
+    status: "queued",
+    progress: 0,
+  });
+
+  await db.insert(jobEvents).values({
+    jobId,
+    eventType: "queued",
+    payload: { message: "Job queued via canvas node", node_id: node.id },
+  });
+
+  const enqueueSpan = currentTrace()?.recorder.startSpan("image.enqueue", {
+    job_id: jobId,
+    job_type: args.jobType,
+    size: args.payload.input.size,
+  });
+  await enqueueImageJob(payload);
+  enqueueSpan?.end();
+
+  return {
+    job_id: jobId,
+    node_id: node.id,
+    job_type: args.jobType,
+    queue_name: queueName,
   };
 }
 
@@ -605,8 +859,10 @@ async function runImageNode(
 ): Promise<NodeRunOutput> {
   const data = node.data as ImageNodeData;
 
-  const model = await resolveImageModel(data.modelId);
-  const modelId = data.modelId ?? model.id;
+  // ── Post-processing / analysis jobs operate on an existing image ──
+  if (data.compliancePlatforms?.length) return runImageComplianceJob(node, data);
+  if (data.textLayers?.length) return runImageTextJob(node, data);
+  if (data.editOp) return runImageEditJob(node, data, upstreamAssetIds);
 
   // E-commerce/creative kind preset augments the prompt (and the cache key).
   const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
@@ -619,6 +875,8 @@ async function runImageNode(
 
   // Check if i2i mode is needed (implied by having references)
   const mode = refAssetIds.length > 0 ? "i2i" : "t2i";
+  const model = await resolveImageModelForMode(data.modelId, mode);
+  const modelId = model.id;
 
   if (mode === "i2i" && !model.supports_reference) {
     throw new Error("input.unsupported_model");
@@ -630,29 +888,28 @@ async function runImageNode(
     mode,
     prompt: effectivePrompt,
     model_id: modelId,
-    size: data.size as ImageSize,
+    size: data.size,
     reference_sha256s: sha256s,
+    ...(data.seed !== undefined ? { seed: data.seed } : {}),
   });
 
   // Cache hit check
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
-  const jobId = randomUUID();
-  const jobType = mode === "t2i" ? "image.t2i" : "image.i2i";
-  const queueName = "q.image.std";
-
   // Store canvas context in input_snapshot so the completion handler
-  // can update the node status and propagate dirty flags.
+  // can update the node status and propagate dirty flags. E-commerce
+  // kinds opt into the evaluate flywheel (score + at most one refine).
   const inputSnapshot = {
     mode,
     prompt: effectivePrompt,
     model_id: modelId,
     size: data.size,
     reference_asset_ids: refAssetIds,
+    ...(["product", "model", "ad"].includes(data.kind ?? "") ? { _evaluate: true } : {}),
     // Canvas context — read by job-event.service on completion
     _canvas: {
       canvas_id: node.canvasId,
@@ -660,57 +917,225 @@ async function runImageNode(
     },
   };
 
-  const payload: ImageJobPayload = {
-    job_id: jobId,
-    job_type: jobType,
-    model_id: modelId,
-    credential: {
-      class_path: model.class_path,
-      api_key: apiKey,
-      base_url: model.base_url,
-      model: model.model,
-    },
-    input: {
-      prompt: effectivePrompt,
-      size: data.size as ImageJobPayload["input"]["size"],
-      reference_storage_keys: [], // resolved by cache service
-    },
-    callback: {
-      event_channel: jobEventChannel(jobId),
-      upload_bucket: getBucket(),
-      upload_prefix: buildStorageKey("generated", jobId),
-    },
-    cache_key: cacheKey,
-    timeout_ms: 120_000,
-  };
-
-  const db = getDb();
-  await assertNoInFlightNodeJob(node.canvasId, node.id);
-  await db.insert(jobs).values({
-    id: jobId,
-    jobType,
-    queueName,
-    bullmqJobId: jobId,
-    inputSnapshot,
+  return dispatchImageJob(node, {
+    jobType: mode === "t2i" ? "image.t2i" : "image.i2i",
     cacheKey,
-    status: "queued",
-    progress: 0,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: mode === "t2i" ? "image.t2i" : "image.i2i",
+      model_id: modelId,
+      credential: {
+        class_path: model.class_path,
+        api_key: apiKey,
+        base_url: model.base_url,
+        model: model.model,
+      },
+      input: {
+        prompt: effectivePrompt,
+        size: data.size,
+        reference_storage_keys: [], // resolved by cache service
+        ...(data.seed !== undefined ? { seed: data.seed } : {}),
+      },
+      cache_key: cacheKey,
+      timeout_ms: 120_000,
+    },
+  });
+}
+
+// ── image.edit / image.text / image.compliance（P1 电商后处理） ──────
+
+/** Resolve the operation source: explicit sourceAssetId, else the first
+ * upstream/reference asset. Edit-style ops need something to act on. */
+async function resolveSourceAssetId(
+  data: ImageNodeData,
+  upstreamAssetIds: string[],
+): Promise<string> {
+  const source = data.sourceAssetId
+    ?? upstreamAssetIds[0]
+    ?? data.referenceAssetIds?.[0];
+  if (!source) throw new Error("input.source_asset_required");
+  return source;
+}
+
+async function runImageEditJob(
+  node: typeof canvasNodes.$inferSelect,
+  data: ImageNodeData,
+  upstreamAssetIds: string[],
+): Promise<NodeRunOutput> {
+  const model = await resolveImageModelForMode(data.modelId, "i2i");
+  const modelId = model.id;
+  if (!model.supports_reference) throw new Error("input.unsupported_model");
+
+  const sourceId = await resolveSourceAssetId(data, upstreamAssetIds);
+  const sourceKey = await getAssetStorageKey(sourceId);
+  const maskKey = data.maskAssetId ? await getAssetStorageKey(data.maskAssetId) : undefined;
+
+  const [{ sha256s }, sourceSha] = await Promise.all([
+    collectReferenceSha256s(data.referenceAssetIds ?? []),
+    collectReferenceSha256s([sourceId]),
+  ]);
+  const maskSha = data.maskAssetId
+    ? (await collectReferenceSha256s([data.maskAssetId])).sha256s[0]
+    : undefined;
+
+  const effectivePrompt = composeImagePrompt(data.prompt, data.scene, data.kind, data.negativePrompt);
+  const cacheKey = buildImageCacheKey({
+    mode: "i2i",
+    prompt: effectivePrompt,
+    model_id: modelId,
+    size: data.size,
+    reference_sha256s: sha256s,
+    edit_op: data.editOp,
+    source_sha256: sourceSha.sha256s[0],
+    ...(maskSha ? { mask_sha256: maskSha } : {}),
+    ...(data.seed !== undefined ? { seed: data.seed } : {}),
   });
 
-  await db.insert(jobEvents).values({
-    jobId,
-    eventType: "queued",
-    payload: { message: "Job queued via canvas node", node_id: node.id },
-  });
+  const cached = await findCachedJob(cacheKey);
+  if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
-  await enqueueImageJob(payload);
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
+  if (!apiKey) throw new Error("provider.invalid_key");
 
-  return {
-    job_id: jobId,
-    node_id: node.id,
-    job_type: jobType,
-    queue_name: queueName,
+  const inputSnapshot = {
+    mode: "i2i",
+    edit_op: data.editOp,
+    prompt: effectivePrompt,
+    model_id: modelId,
+    size: data.size,
+    source_asset_id: sourceId,
+    reference_asset_ids: data.referenceAssetIds ?? [],
+    _canvas: { canvas_id: node.canvasId, node_id: node.id },
   };
+
+  return dispatchImageJob(node, {
+    jobType: "image.edit",
+    cacheKey,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: "image.edit",
+      model_id: modelId,
+      credential: {
+        class_path: model.class_path,
+        api_key: apiKey,
+        base_url: model.base_url,
+        model: model.model,
+      },
+      input: {
+        prompt: effectivePrompt,
+        size: data.size,
+        reference_storage_keys: [],
+        source_storage_key: sourceKey,
+        edit_op: data.editOp,
+        ...(maskKey ? { mask_storage_key: maskKey } : {}),
+        ...(data.seed !== undefined ? { seed: data.seed } : {}),
+      },
+      cache_key: cacheKey,
+      timeout_ms: 120_000,
+    },
+  });
+}
+
+async function runImageTextJob(
+  node: typeof canvasNodes.$inferSelect,
+  data: ImageNodeData,
+): Promise<NodeRunOutput> {
+  const sourceId = await resolveSourceAssetId(data, []);
+  const sourceKey = await getAssetStorageKey(sourceId);
+  const sourceSha = (await collectReferenceSha256s([sourceId])).sha256s[0];
+  const size = await getAssetSize(sourceId);
+
+  const cacheKey = buildImageCacheKey({
+    mode: "post",
+    prompt: "",
+    model_id: "pil",
+    size,
+    reference_sha256s: [],
+    source_sha256: sourceSha,
+    text_layers: data.textLayers,
+  });
+
+  const cached = await findCachedJob(cacheKey);
+  if (cached?.outputAssetId) return applyCacheHit(node, cached);
+
+  const inputSnapshot = {
+    mode: "post.text",
+    size,
+    source_asset_id: sourceId,
+    _canvas: { canvas_id: node.canvasId, node_id: node.id },
+  };
+
+  return dispatchImageJob(node, {
+    jobType: "image.text",
+    cacheKey,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: "image.text",
+      model_id: "pil",
+      credential: { class_path: "", api_key: "" },
+      input: {
+        prompt: "",
+        size,
+        source_storage_key: sourceKey,
+        text_layers: data.textLayers,
+      },
+      cache_key: cacheKey,
+      timeout_ms: 60_000,
+    },
+  });
+}
+
+async function runImageComplianceJob(
+  node: typeof canvasNodes.$inferSelect,
+  data: ImageNodeData,
+): Promise<NodeRunOutput> {
+  const sourceId = await resolveSourceAssetId(data, []);
+  const sourceKey = await getAssetStorageKey(sourceId);
+  const sourceSha = (await collectReferenceSha256s([sourceId])).sha256s[0];
+  const size = await getAssetSize(sourceId);
+
+  const cacheKey = buildImageCacheKey({
+    mode: "post",
+    prompt: "",
+    model_id: "compliance",
+    size,
+    reference_sha256s: [],
+    source_sha256: sourceSha,
+    compliance_platforms: data.compliancePlatforms,
+  });
+
+  const cached = await findCachedJob(cacheKey);
+  if (cached?.outputAssetId) return applyCacheHit(node, cached);
+
+  const inputSnapshot = {
+    mode: "post.compliance",
+    size,
+    source_asset_id: sourceId,
+    _canvas: { canvas_id: node.canvasId, node_id: node.id },
+  };
+
+  return dispatchImageJob(node, {
+    jobType: "image.compliance",
+    cacheKey,
+    inputSnapshot,
+    payload: {
+      job_id: randomUUID(),
+      job_type: "image.compliance",
+      model_id: "compliance",
+      credential: { class_path: "", api_key: "" },
+      input: {
+        prompt: "",
+        size,
+        source_storage_key: sourceKey,
+        compliance_platforms: data.compliancePlatforms,
+      },
+      cache_key: cacheKey,
+      timeout_ms: 60_000,
+    },
+  });
 }
 
 // ── Character node executor (MVP: generates front/side/back portraits) ──
@@ -740,7 +1165,7 @@ async function runCharacterNode(
 
   const tenantId = await getTenantIdForCanvas(node.canvasId);
   const model = await resolveImageModel(undefined); // default image model
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Content-based cache: same character brief → reuse the prior portrait.
@@ -901,8 +1326,8 @@ async function runShotNode(
     .filter(Boolean)
     .join(" ");
 
-  const model = await resolveImageModel(undefined); // default image model
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const model = await resolveImageModelForMode(undefined, mode); // default image model (i2i-capable for reference shots)
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Content-based cache: same shot brief + lighting + references → reuse.
@@ -1104,7 +1529,7 @@ async function runVideoNode(
 
   // Resolve video model
   const videoModel = await resolveVideoModel(data.modelId);
-  const apiKey = videoModel?.api_key ?? config.arkApiKey();
+  const apiKey = videoModel?.api_key ?? config.apiKeyFor(videoModel?.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   // Content-based cache: an identical re-run (same model, prompt, frames,
@@ -1173,6 +1598,7 @@ async function runVideoNode(
       base_url: videoModel?.base_url ?? "https://yunwu.ai/volc/v1",
       model: videoModel?.model ?? "doubao-seedance-1-0-lite-t2v-250428",
     },
+    fallback_credentials: await resolveVideoFallbackModels(videoModel?.id),
     input: {
       prompt,
       first_frame_storage_key: firstFrameKey,
@@ -1203,6 +1629,38 @@ async function runVideoNode(
 
 // ── Concat node executor ───────────────────────────────────────────
 
+/**
+ * Per-clip voiceover subtitle text for a concat node, aligned with the
+ * upstream asset order (voiceoverText preferred, audioDesc as fallback).
+ * Returns undefined when no upstream shot carries any text — the worker
+ * then skips the subtitle pass entirely.
+ */
+async function collectUpstreamSubtitles(
+  canvasId: string,
+  nodeId: string,
+): Promise<Array<string | null> | undefined> {
+  const upstream = await collectUpstreamAssets(canvasId, nodeId);
+  const sourceIds = [...new Set(upstream.map((input) => input.sourceNodeId))];
+  if (sourceIds.length === 0) return undefined;
+
+  const db = getDb();
+  const rows = await db
+    .select({ id: canvasNodes.id, type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), inArray(canvasNodes.id, sourceIds)));
+
+  const textByNode = new Map<string, string>();
+  for (const row of rows) {
+    if (row.type !== "shot") continue;
+    const data = row.data as ShotNodeData;
+    const text = (data.voiceoverText ?? data.audioDesc ?? "").trim();
+    if (text) textByNode.set(row.id, text);
+  }
+
+  const subtitles = upstream.map((input) => textByNode.get(input.sourceNodeId) ?? null);
+  return subtitles.some(Boolean) ? subtitles : undefined;
+}
+
 async function runConcatNode(
   node: typeof canvasNodes.$inferSelect,
   upstreamAssetIds: string[],
@@ -1211,8 +1669,15 @@ async function runConcatNode(
     throw new Error("canvas.concat_needs_upstream_videos");
   }
 
-  const data = node.data as { transition?: string };
+  const data = node.data as { transition?: string; burnSubtitles?: boolean };
   const transition = data.transition ?? "default";
+
+  // 口播字幕：opt-in（node.data.burnSubtitles）时，从上游 shot 节点收集
+  // 每个片段的口播文案（voiceoverText 优先，回退 audioDesc）。
+  let subtitles: Array<string | null> | undefined;
+  if (data.burnSubtitles) {
+    subtitles = await collectUpstreamSubtitles(node.canvasId, node.id);
+  }
 
   const db = getDb();
   // Resolve every clip's storage key + sha256 in a single query.
@@ -1236,8 +1701,9 @@ async function runConcatNode(
     throw new Error("canvas.concat_needs_upstream_videos");
   }
 
-  // Content-based cache: same clips, same order, same transition → reuse.
-  const cacheKey = buildConcatCacheKey({ clip_sha256s: clipSha256s, transition });
+  // Content-based cache: same clips, same order, same transition, same
+  // subtitles → reuse. A subtitled concat is a different output.
+  const cacheKey = buildConcatCacheKey({ clip_sha256s: clipSha256s, transition, subtitles });
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
@@ -1275,7 +1741,10 @@ async function runConcatNode(
   await enqueueConcatJob({
     job_id: jobId,
     job_type: "concat.videos",
-    input: { storage_keys: storageKeys },
+    input: {
+      storage_keys: storageKeys,
+      ...(subtitles ? { subtitles } : {}),
+    },
     callback: {
       event_channel: jobEventChannel(jobId),
       upload_bucket: getBucket(),
@@ -1310,7 +1779,7 @@ export async function runCharacterView(
 
   const data = node.data as CharacterNodeData;
   const model = await resolveImageModel(undefined);
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const refAssetIds: string[] = [];
@@ -1487,7 +1956,7 @@ export async function runMultiCameraGrid(
   const count = gridSize === "3x3" ? 9 : 25;
   const cols = gridSize === "3x3" ? 3 : 5;
   const model = await resolveImageModel(undefined);
-  const apiKey = model.api_key ?? config.arkApiKey();
+  const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const upstreamAssetIds = await collectUpstreamAssetIds(canvasId, nodeId);
@@ -1583,7 +2052,7 @@ export async function runMotionPrediction(
 
   // Resolve video model first to get its api_key
   const videoModel = await resolveVideoModel(undefined);
-  const apiKey = videoModel?.api_key ?? config.arkApiKey();
+  const apiKey = videoModel?.api_key ?? config.apiKeyFor(videoModel?.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
   const videoNodeId = randomUUID();
@@ -1712,8 +2181,10 @@ export async function runStoryPush(
   if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
 
   const data = node.data as ShotNodeData;
-  const defaultModel = await getDefaultModel("default", "image");
-  const apiKey = defaultModel.apiKey ?? config.arkApiKey();
+  const textModel = await getDefaultModel("default", "text");
+  const apiKey = textModel.apiKey?.trim();
+  if (!apiKey) throw new Error("provider.invalid_key");
+  const characters = await loadCanvasCharacterPayloads(canvasId);
   const jobId = randomUUID();
   const jobType = "pipeline.story_push";
   const queueName = "q.pipeline.full";
@@ -1736,16 +2207,448 @@ export async function runStoryPush(
   await enqueuePipelineJob({
     job_id: jobId,
     job_type: jobType,
-    credential: { class_path: "agents.StoryboardArtist", api_key: apiKey ?? "" },
-    input: { content: `Predict next 4 frames: ${(data.ffDesc ?? "")}. Motion: ${(data.motionDesc ?? "")}` },
+    credential: {
+      class_path: "agents.Screenwriter",
+      api_key: apiKey,
+      base_url: textModel.baseUrl ?? undefined,
+      model: textModel.vendorModelId ?? textModel.id,
+      model_provider: textModel.provider,
+    },
+    input: {
+      content: data.ffDesc ?? "",
+      characters,
+      ff_desc: data.ffDesc ?? "",
+      lf_desc: data.lfDesc ?? "",
+      motion_desc: data.motionDesc ?? "",
+      user_requirement: "Push the story forward with exactly 4 following shots.",
+    },
     callback: {
       event_channel: jobEventChannel(jobId),
       upload_bucket: getBucket(),
       upload_prefix: buildStorageKey("pipeline", jobId),
     },
     cache_key: `canvas:push:${jobId}`,
-    timeout_ms: 120_000,
+    timeout_ms: 180_000,
   });
+
+  await setNodeStatus(canvasId, nodeId, "running");
+
+  return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
+}
+
+// ── ViMax agent bridge executors (full agent surface) ───────────────
+//
+// Every remaining ViMax agent is reachable as one pipeline job. These
+// executors share the enqueue boilerplate through `enqueueAgentJob`; the
+// completion side (agent-result.ts) maps each JSON result onto canvas state.
+
+type AgentJobInput = PipelineJobPayloadValidated["input"];
+
+/** Primary agent class per bridge job — observability only; the Python
+ * pipeline worker dispatches on job_type, not class_path. */
+const AGENT_CLASS_PATHS: Record<PipelineJobType, string> = {
+  "pipeline.script2storyboard": "agents.StoryboardArtist",
+  "pipeline.story_push": "agents.ScriptPlanner",
+  "pipeline.idea2script": "agents.Screenwriter",
+  "pipeline.script2characters": "agents.CharacterExtractor",
+  "pipeline.plan_script": "agents.ScriptPlanner",
+  "pipeline.enhance_script": "agents.ScriptEnhancer",
+  "pipeline.novel2scenes": "agents.NovelCompressor",
+  "pipeline.select_reference": "agents.ReferenceImageSelector",
+  "pipeline.select_best_image": "agents.BestImageSelector",
+  "pipeline.camera_tree": "agents.CameraImageGenerator",
+  "pipeline.character_portraits": "agents.CharacterPortraitsGenerator",
+};
+
+async function loadCanvasCharacterPayloads(canvasId: string) {
+  const db = getDb();
+  const rows = await db
+    .select({ type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "character")));
+  return mapCanvasCharactersToPayload(
+    rows.map((row) => ({ type: row.type, data: row.data as Record<string, unknown> })),
+  );
+}
+
+async function enqueueAgentJob(params: {
+  canvasId: string;
+  nodeId: string;
+  nodeType: string;
+  jobType: PipelineJobType;
+  input: AgentJobInput;
+  cachePrefix: string;
+  timeoutMs?: number;
+}): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, params.canvasId), eq(canvasNodes.id, params.nodeId)))
+    .limit(1);
+  if (!node || node.type !== params.nodeType) throw new Error("canvas.node_not_found");
+
+  const textModel = await getDefaultModel("default", "text");
+  const apiKey = textModel.apiKey?.trim();
+  if (!apiKey) throw new Error("provider.invalid_key");
+
+  const jobId = randomUUID();
+  const queueName = "q.pipeline.full";
+
+  await assertNoInFlightNodeJob(params.canvasId, params.nodeId);
+  await db.insert(jobs).values({
+    id: jobId,
+    jobType: params.jobType,
+    queueName,
+    bullmqJobId: jobId,
+    inputSnapshot: { ...params.input, _canvas: { canvas_id: params.canvasId, node_id: params.nodeId } },
+    cacheKey: `${params.cachePrefix}:${jobId}`,
+    status: "queued",
+  });
+  await db.insert(jobEvents).values({
+    jobId,
+    eventType: "queued",
+    payload: { message: `${params.jobType} queued`, node_id: params.nodeId },
+  });
+
+  await enqueuePipelineJob({
+    job_id: jobId,
+    job_type: params.jobType,
+    credential: {
+      class_path: AGENT_CLASS_PATHS[params.jobType],
+      api_key: apiKey,
+      base_url: textModel.baseUrl ?? undefined,
+      model: textModel.vendorModelId ?? textModel.id,
+      model_provider: textModel.provider,
+    },
+    input: params.input,
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("pipeline", jobId),
+    },
+    cache_key: `${params.cachePrefix}:${jobId}`,
+    timeout_ms: params.timeoutMs ?? 180_000,
+  });
+
+  await setNodeStatus(params.canvasId, params.nodeId, "running");
+  broadcastNodeStatus(params.canvasId, params.nodeId, "running");
+
+  return { job_id: jobId, node_id: params.nodeId, job_type: params.jobType, queue_name: queueName };
+}
+
+async function loadScriptContent(canvasId: string, nodeId: string): Promise<string> {
+  const db = getDb();
+  const [node] = await db
+    .select({ data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  const content = (node?.data as { content?: string } | undefined)?.content?.trim();
+  if (!content) throw new Error("canvas.script_empty");
+  return content;
+}
+
+/** 创意 → 故事 → 场景剧本（Screenwriter 两段式）。 */
+export async function runIdea2Script(
+  canvasId: string,
+  nodeId: string,
+  userRequirement?: string,
+): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.idea2script",
+    input: { content, idea: content, user_requirement: userRequirement },
+    cachePrefix: "canvas:i2s",
+    timeoutMs: 300_000,
+  });
+}
+
+/** 剧本大纲规划（ScriptPlanner）。 */
+export async function runPlanScript(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.plan_script",
+    input: { content, idea: content },
+    cachePrefix: "canvas:plan",
+    timeoutMs: 300_000,
+  });
+}
+
+/** 剧本连续性润色（ScriptEnhancer）。 */
+export async function runEnhanceScript(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.enhance_script",
+    input: { content },
+    cachePrefix: "canvas:enhance",
+    timeoutMs: 300_000,
+  });
+}
+
+/** 剧本 → 角色清单（CharacterExtractor），完成后展开为角色节点。 */
+export async function runScript2Characters(
+  canvasId: string,
+  nodeId: string,
+): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.script2characters",
+    input: { content },
+    cachePrefix: "canvas:s2c",
+  });
+}
+
+/** 小说改编全链（压缩 → 事件 → 场景 → 角色融合）。 */
+export async function runNovel2Scenes(
+  canvasId: string,
+  nodeId: string,
+  maxEvents = 3,
+  maxScenesPerEvent = 2,
+): Promise<NodeRunOutput> {
+  const content = await loadScriptContent(canvasId, nodeId);
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.novel2scenes",
+    input: { content, novel_text: content, max_events: maxEvents, max_scenes_per_event: maxScenesPerEvent },
+    cachePrefix: "canvas:n2s",
+    timeoutMs: 600_000,
+  });
+}
+
+/** ReferenceImageSelector：为镜头首帧选择角色参考图并构建生成提示词。 */
+export async function runSelectReference(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select({ type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
+
+  const data = node.data as ShotNodeData;
+  const visibleCharIds = data.visibleCharIds ?? [];
+  if (visibleCharIds.length === 0) throw new Error("canvas.character_needs_front_view");
+
+  const charRows = await db
+    .select({ id: canvasNodes.id, data: canvasNodes.data, outputAssetId: canvasNodes.outputAssetId })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), inArray(canvasNodes.id, visibleCharIds)));
+
+  const refAssetIds = charRows
+    .map((row) => {
+      const charData = row.data as { frontAssetId?: string };
+      return charData.frontAssetId ?? row.outputAssetId;
+    })
+    .filter((id): id is string => Boolean(id));
+  if (refAssetIds.length === 0) throw new Error("canvas.character_needs_front_view");
+
+  const assetRows = await db
+    .select({ id: assets.id, storageKey: assets.storageKey })
+    .from(assets)
+    .where(inArray(assets.id, refAssetIds));
+  const keyByAssetId = new Map(assetRows.map((row) => [row.id, row.storageKey]));
+
+  const reference_pairs = charRows
+    .map((row) => {
+      const charData = row.data as { name?: string; frontAssetId?: string };
+      const storageKey = keyByAssetId.get(charData.frontAssetId ?? row.outputAssetId ?? "");
+      return storageKey ? { storage_key: storageKey, text: charData.name ?? "" } : null;
+    })
+    .filter((pair): pair is { storage_key: string; text: string } => pair !== null);
+
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "shot",
+    jobType: "pipeline.select_reference",
+    input: {
+      content: data.ffDesc ?? "",
+      target_description: data.ffDesc ?? "",
+      reference_pairs,
+    },
+    cachePrefix: "canvas:refsel",
+  });
+}
+
+/** BestImageSelector：按一致性为多变体图像节点选优。 */
+export async function runSelectBestImage(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select({ type: canvasNodes.type, data: canvasNodes.data })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "image") throw new Error("canvas.node_not_found");
+
+  const data = node.data as { prompt?: string; variants?: Array<{ assetId: string; index: number }> };
+  const variants = data.variants ?? [];
+  if (variants.length < 2) throw new Error("canvas.variants_empty");
+
+  const assetRows = await db
+    .select({ id: assets.id, storageKey: assets.storageKey })
+    .from(assets)
+    .where(inArray(assets.id, variants.map((v) => v.assetId)));
+  const keyByAssetId = new Map(assetRows.map((row) => [row.id, row.storageKey]));
+
+  // Order candidates by variant index so best_index maps back to the gallery.
+  const ordered = [...variants].sort((a, b) => a.index - b.index);
+  const candidate_storage_keys = ordered
+    .map((variant) => keyByAssetId.get(variant.assetId))
+    .filter((key): key is string => Boolean(key));
+  if (candidate_storage_keys.length < 2) throw new Error("canvas.variants_empty");
+
+  const charRows = await db
+    .select({ data: canvasNodes.data, outputAssetId: canvasNodes.outputAssetId })
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "character")));
+  const reference_pairs = charRows
+    .map((row) => {
+      const charData = row.data as { name?: string; frontAssetId?: string };
+      const storageKey = keyByAssetId.get(charData.frontAssetId ?? row.outputAssetId ?? "");
+      return storageKey ? { storage_key: storageKey, text: charData.name ?? "" } : null;
+    })
+    .filter((pair): pair is { storage_key: string; text: string } => pair !== null);
+
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "image",
+    jobType: "pipeline.select_best_image",
+    input: {
+      content: data.prompt ?? "",
+      target_description: data.prompt ?? "",
+      candidate_storage_keys,
+      reference_pairs,
+    },
+    cachePrefix: "canvas:bestsel",
+  });
+}
+
+/** CameraImageGenerator.construct_camera_tree：从分镜格构建机位层级。 */
+export async function runCameraTree(canvasId: string, nodeId: string): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "script") throw new Error("canvas.node_not_found");
+
+  const cells = await db
+    .select({ data: canvasNodes.data })
+    .from(canvasNodes)
+    .innerJoin(canvasEdges, eq(canvasEdges.targetNodeId, canvasNodes.id))
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.type, "storyboard_cell"), eq(canvasEdges.sourceNodeId, nodeId)));
+
+  const briefs = cells
+    .map((row) => row.data as unknown as StoryboardCellNodeData)
+    .filter((cell) => typeof cell.shotBrief === "string");
+  if (briefs.length === 0) throw new Error("canvas.storyboard_empty");
+
+  const shot_descs = briefs.map((cell, index) => ({
+    idx: index,
+    is_last: index === briefs.length - 1,
+    cam_idx: cell.cameraIdx,
+    visual_desc: cell.shotBrief,
+  }));
+  const cameraIdxs = [...new Set(briefs.map((cell) => cell.cameraIdx))];
+  const cameras = cameraIdxs.map((idx) => ({
+    idx,
+    active_shot_idxs: briefs
+      .map((cell, index) => (cell.cameraIdx === idx ? index : -1))
+      .filter((index) => index >= 0),
+  }));
+
+  return enqueueAgentJob({
+    canvasId,
+    nodeId,
+    nodeType: "script",
+    jobType: "pipeline.camera_tree",
+    input: { content: "camera tree", cameras, shot_descs },
+    cachePrefix: "canvas:camtree",
+  });
+}
+
+/** CharacterPortraitsGenerator：三视图一次生成（front → side/back 参考）。 */
+export async function runCharacterPortraits(
+  canvasId: string,
+  nodeId: string,
+  style?: string,
+): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "character") throw new Error("canvas.node_not_found");
+
+  const data = node.data as CharacterNodeData;
+  if (!data.name?.trim()) throw new Error("canvas.character_empty");
+
+  const imageModel = await resolveImageModel(undefined);
+  const apiKey = imageModel.api_key ?? config.apiKeyFor(imageModel.provider);
+  if (!apiKey) throw new Error("provider.invalid_key");
+
+  const jobId = randomUUID();
+  const jobType = "pipeline.character_portraits";
+  const queueName = "q.pipeline.full";
+
+  await assertNoInFlightNodeJob(canvasId, nodeId);
+  await db.insert(jobs).values({
+    id: jobId, jobType, queueName, bullmqJobId: jobId,
+    inputSnapshot: {
+      character: { name: data.name, description: data.description ?? "" },
+      _canvas: { canvas_id: canvasId, node_id: nodeId },
+    },
+    cacheKey: `canvas:portraits:${jobId}`,
+    status: "queued",
+  });
+  await db.insert(jobEvents).values({
+    jobId, eventType: "queued",
+    payload: { message: "Character portraits queued", node_id: nodeId },
+  });
+
+  await enqueuePipelineJob({
+    job_id: jobId,
+    job_type: jobType,
+    credential: {
+      class_path: imageModel.class_path,
+      api_key: apiKey,
+      base_url: imageModel.base_url,
+      model: imageModel.model,
+    },
+    input: {
+      content: data.name,
+      character: { name: data.name, description: data.description ?? "" },
+      style: style ?? "",
+    },
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("generated", jobId),
+    },
+    cache_key: `canvas:portraits:${jobId}`,
+    timeout_ms: 300_000,
+  });
+
+  await setNodeStatus(canvasId, nodeId, "running");
+  broadcastNodeStatus(canvasId, nodeId, "running");
 
   return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
 }
@@ -1845,6 +2748,82 @@ export async function runAudioGeneration(
     cache_key: `canvas:audio:${jobId}`,
     timeout_ms: 60_000,
   });
+
+  return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
+}
+
+// ── Voiceover TTS executor (口播配音) ────────────────────────────────
+//
+// Synthesizes the shot's voiceover line (voiceoverText, falling back to
+// audioDesc) into an audio asset. Completion attaches it to the shot's
+// data.voiceoverAssetId WITHOUT touching outputAssetId or cascading — the
+// shot's visual output is unchanged.
+
+export async function runVoiceover(
+  canvasId: string,
+  nodeId: string,
+): Promise<NodeRunOutput> {
+  const db = getDb();
+  const [node] = await db
+    .select()
+    .from(canvasNodes)
+    .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.id, nodeId)))
+    .limit(1);
+  if (!node || node.type !== "shot") throw new Error("canvas.node_not_found");
+
+  const data = node.data as ShotNodeData;
+  const text = (data.voiceoverText ?? data.audioDesc ?? "").trim();
+  if (!text) throw new Error("canvas.audio_desc_empty");
+
+  const ttsModel = await getDefaultModel("default", "tts");
+  const apiKey = ttsModel.apiKey?.trim();
+  if (!apiKey) throw new Error("provider.invalid_key");
+
+  const jobId = randomUUID();
+  const jobType = "audio.tts";
+  const queueName = "q.audio.std";
+
+  const inputSnapshot = {
+    voiceover_text: text,
+    _voiceover: true,
+    _canvas: { canvas_id: canvasId, node_id: nodeId },
+  };
+
+  await assertNoInFlightNodeJob(canvasId, nodeId);
+  await db.insert(jobs).values({
+    id: jobId, jobType, queueName, bullmqJobId: jobId,
+    inputSnapshot, cacheKey: `canvas:tts:${jobId}`, status: "queued",
+  });
+  await db.insert(jobEvents).values({
+    jobId, eventType: "queued",
+    payload: { message: "Voiceover TTS queued", node_id: nodeId },
+  });
+
+  await enqueueAudioJob({
+    job_id: jobId,
+    job_type: jobType,
+    input: {
+      prompt: text,
+      text,
+      voice: (ttsModel.config as Record<string, unknown> | undefined)?.voice as string | undefined,
+    },
+    credential: {
+      class_path: ttsModel.classPath ?? DEFAULT_TTS_MODEL.classPath,
+      api_key: apiKey,
+      base_url: ttsModel.baseUrl ?? undefined,
+      model: ttsModel.vendorModelId ?? undefined,
+    },
+    callback: {
+      event_channel: jobEventChannel(jobId),
+      upload_bucket: getBucket(),
+      upload_prefix: buildStorageKey("audio", jobId),
+    },
+    cache_key: `canvas:tts:${jobId}`,
+    timeout_ms: 120_000,
+  });
+
+  await setNodeStatus(canvasId, nodeId, "running");
+  broadcastNodeStatus(canvasId, nodeId, "running");
 
   return { job_id: jobId, node_id: nodeId, job_type: jobType, queue_name: queueName };
 }

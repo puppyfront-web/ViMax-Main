@@ -1,6 +1,13 @@
 export const IMAGE_JOB_TYPES = [
   "image.t2i",
   "image.i2i",
+  "image.edit",
+] as const;
+
+/** Image-pipeline jobs that post-process or analyse an existing image. */
+export const IMAGE_POST_JOB_TYPES = [
+  "image.text",
+  "image.compliance",
 ] as const;
 
 /** Canvas-originated job types that still use the image generation pipeline. */
@@ -14,12 +21,34 @@ export const CANVAS_IMAGE_JOB_TYPES = [
 
 export const ALL_IMAGE_JOB_TYPES = [
   ...IMAGE_JOB_TYPES,
+  ...IMAGE_POST_JOB_TYPES,
   ...CANVAS_IMAGE_JOB_TYPES,
 ] as const;
 
 export type ImageJobType = (typeof IMAGE_JOB_TYPES)[number];
 export type CanvasImageJobType = (typeof CANVAS_IMAGE_JOB_TYPES)[number];
 export type AllImageJobType = (typeof ALL_IMAGE_JOB_TYPES)[number];
+
+export const IMAGE_EDIT_OPS = ["inpaint", "outpaint", "remove_bg", "replace_bg"] as const;
+export type ImageEditOp = (typeof IMAGE_EDIT_OPS)[number];
+
+/** 平台合规预检支持的平台（check_compliance / image.compliance）。 */
+export const COMPLIANCE_PLATFORMS = ["amazon", "tiktok_shop", "shopee", "shopify"] as const;
+export type CompliancePlatform = (typeof COMPLIANCE_PLATFORMS)[number];
+
+/** A rendered text layer burned onto an existing image (image.text). */
+export interface ImageTextLayer {
+  text: string;
+  /** 0-1 normalized top-left anchor. */
+  x: number;
+  y: number;
+  font_size: number;
+  /** CSS-style hex color, e.g. "#ffffff". */
+  color: string;
+  align?: "left" | "center" | "right";
+  /** Registered font name; falls back to the worker's CJK default. */
+  font?: string;
+}
 
 export const JOB_STATUSES = [
   "queued",
@@ -46,6 +75,8 @@ export const IMAGE_SIZES = [
   "1600x900",
   "1024x1792",
   "1792x1024",
+  "1344x768",
+  "768x1344",
 ] as const;
 export type ImageSize = (typeof IMAGE_SIZES)[number];
 
@@ -59,10 +90,31 @@ export interface ImageJobCredential {
   model?: string;
 }
 
+/** 容量类失败（拥堵/限流/配额尽）时依次降级尝试的备用模型。 */
+export interface FallbackCredential {
+  class_path: string;
+  api_key: string;
+  base_url?: string;
+  model?: string;
+  label?: string;
+}
+
 export interface ImageJobInput {
   prompt: string;
-  size: ImageSize;
+  /** 画布电商比例可产出 IMAGE_SIZES 之外的合法 WxH（如 1024x1536）。 */
+  size: string;
   reference_storage_keys?: string[];
+  /** 输入图（image.edit / image.text / image.compliance 的操作对象）。 */
+  source_storage_key?: string;
+  /** image.edit 的局部重绘遮罩（与 source 同尺寸的 PNG alpha 遮罩）。 */
+  mask_storage_key?: string;
+  edit_op?: ImageEditOp;
+  /** seed_lock：固定随机种子保证批量变体的商品一致性。 */
+  seed?: number;
+  /** image.text：压在 source 上的文字图层。 */
+  text_layers?: ImageTextLayer[];
+  /** image.compliance：要校验的平台 id（amazon/tiktok_shop/shopee/shopify）。 */
+  compliance_platforms?: string[];
 }
 
 export interface ImageJobCallback {
@@ -76,10 +128,16 @@ export interface ImageJobPayload {
   job_type: AllImageJobType;
   model_id: string;
   credential: ImageJobCredential;
+  /** 主模型容量类失败时依次降级尝试的备用模型链（可选） */
+  fallback_credentials?: FallbackCredential[];
   input: ImageJobInput;
   callback: ImageJobCallback;
   cache_key: string;
   timeout_ms: number;
+  /** Python worker 侧已尝试次数；首次执行缺省 0。 */
+  attempt?: number;
+  /** W3C traceparent（TS 决策层 → Python worker 观测关联）。 */
+  traceparent?: string;
 }
 
 export interface ImageJobOutput {
@@ -129,6 +187,8 @@ export interface VideoJobPayload {
     base_url?: string;
     model?: string;
   };
+  /** 容量类失败时依次降级尝试的备用模型链（可选） */
+  fallback_credentials?: FallbackCredential[];
   input: VideoJobInput;
   callback: {
     event_channel: string;
@@ -188,7 +248,7 @@ export type JobEvent =
 export interface ImageModelDescriptor {
   id: string;
   label: string;
-  provider: "doubao" | "google" | "yunwu";
+  provider: "doubao" | "google" | "yunwu" | "zhipu" | "modelscope" | "agnes";
   class_path: string;
   sizes: ImageSize[];
   supports_reference: boolean;
@@ -218,6 +278,58 @@ export const IMAGE_MODELS: ImageModelDescriptor[] = [
     sizes: ["1024x1024", "1600x900"],
     supports_reference: true,
     credits_per_image: 2,
+  },
+  {
+    id: "cogview-3-flash",
+    label: "CogView-3-Flash (Zhipu Free)",
+    provider: "zhipu",
+    class_path: "tools.ImageGeneratorCogViewZhipuAPI",
+    sizes: ["1024x1024", "1344x768", "768x1344"],
+    supports_reference: false,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://open.bigmodel.cn",
+      model: "cogview-3-flash",
+    },
+  },
+  {
+    id: "modelscope-qwen-image",
+    label: "Qwen-Image (ModelScope Free)",
+    provider: "modelscope",
+    class_path: "tools.ImageGeneratorModelScopeAPI",
+    sizes: ["1024x1024", "1344x768", "768x1344"],
+    supports_reference: false,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://api-inference.modelscope.cn",
+      model: "Qwen/Qwen-Image",
+    },
+  },
+  {
+    id: "modelscope-qwen-image-edit",
+    label: "Qwen-Image-Edit-2509 (ModelScope Free)",
+    provider: "modelscope",
+    class_path: "tools.ImageGeneratorQwenImageEditModelScopeAPI",
+    sizes: ["1024x1024", "1344x768", "768x1344"],
+    supports_reference: true,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://api-inference.modelscope.cn",
+      model: "Qwen/Qwen-Image-Edit-2509",
+    },
+  },
+  {
+    id: "agnes-image-2.5-flash",
+    label: "Agnes Image 2.5 Flash",
+    provider: "agnes",
+    class_path: "tools.ImageGeneratorAgnesAPI",
+    sizes: ["1024x1024", "1600x900", "1024x1792", "1792x1024"],
+    supports_reference: true,
+    credits_per_image: 0,
+    init_args: {
+      base_url: "https://apihub.agnes-ai.com/v1",
+      model: "agnes-image-2.5-flash",
+    },
   },
 ];
 
@@ -338,7 +450,7 @@ export function composeVideoPrompt(input: {
 export interface VideoModelDescriptor {
   id: string;
   label: string;
-  provider: "doubao" | "google" | "yunwu";
+  provider: "doubao" | "google" | "yunwu" | "zhipu" | "agnes";
   class_path: string;
   maxDuration: number;
   resolutions: string[];
@@ -384,6 +496,48 @@ export const VIDEO_MODELS: VideoModelDescriptor[] = [
     supports_reference: true,
     credits_per_second: 3,
   },
+  {
+    id: "cogvideox-flash",
+    label: "CogVideoX-Flash (Zhipu Free)",
+    provider: "zhipu",
+    class_path: "tools.VideoGeneratorCogVideoXZhipuAPI",
+    maxDuration: 5,
+    resolutions: ["480p", "720p", "1080p"],
+    supports_reference: true,
+    credits_per_second: 0,
+    init_args: {
+      base_url: "https://open.bigmodel.cn",
+      model: "cogvideox-flash",
+    },
+  },
+  {
+    id: "agnes-video-2.5",
+    label: "Agnes Video 2.5",
+    provider: "agnes",
+    class_path: "tools.VideoGeneratorAgnesAPI",
+    maxDuration: 12,
+    resolutions: ["720p", "1080p"],
+    supports_reference: true,
+    credits_per_second: 1,
+    init_args: {
+      base_url: "https://apihub.agnes-ai.com/v1",
+      model: "agnes-video-2.5",
+    },
+  },
+  {
+    id: "agnes-video-2.5-flash",
+    label: "Agnes Video 2.5 Flash (Free)",
+    provider: "agnes",
+    class_path: "tools.VideoGeneratorAgnesAPI",
+    maxDuration: 12,
+    resolutions: ["720p"],
+    supports_reference: true,
+    credits_per_second: 0,
+    init_args: {
+      base_url: "https://apihub.agnes-ai.com/v1",
+      model: "agnes-video-2.5-flash",
+    },
+  },
 ];
 
 export function getVideoModel(modelId: string): VideoModelDescriptor | undefined {
@@ -404,15 +558,39 @@ export const DEFAULT_TEXT_MODEL = {
   supportsThinking: true,
 };
 
-// ── Pipeline Job Types ─────────────────────────────────────────────
+// ── Default TTS Model (口播配音 fallback) ──────────────────────────────
+
+export const DEFAULT_TTS_MODEL = {
+  id: "yunwu-tts-1",
+  label: "OpenAI TTS (Yunwu)",
+  provider: "yunwu" as const,
+  classPath: "tools.TtsGeneratorOpenAIAPI",
+  baseUrl: "https://yunwu.ai/v1/audio/speech",
+  vendorModelId: "tts-1",
+  voice: "alloy",
+};
+
+// ── Pipeline Job Types (ViMax agent bridges) ───────────────────────
+//
+// Each type maps 1:1 to a bridge function in the Python pipeline worker
+// (vimax_image_worker/pipeline_handler.py PIPELINE_JOB_HANDLERS).
 
 export const PIPELINE_JOB_TYPES = [
   "pipeline.script2storyboard",
   "pipeline.story_push",
+  "pipeline.idea2script",
+  "pipeline.script2characters",
+  "pipeline.plan_script",
+  "pipeline.enhance_script",
+  "pipeline.novel2scenes",
+  "pipeline.select_reference",
+  "pipeline.select_best_image",
+  "pipeline.camera_tree",
+  "pipeline.character_portraits",
 ] as const;
 export type PipelineJobType = (typeof PIPELINE_JOB_TYPES)[number];
 
 // ── Audio Job Types ────────────────────────────────────────────────
 
-export const AUDIO_JOB_TYPES = ["audio.generate"] as const;
+export const AUDIO_JOB_TYPES = ["audio.generate", "audio.tts"] as const;
 export type AudioJobType = (typeof AUDIO_JOB_TYPES)[number];

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ALL_IMAGE_JOB_TYPES, IMAGE_MODES, IMAGE_SIZES, PIPELINE_JOB_TYPES, AUDIO_JOB_TYPES, VIDEO_ASPECT_RATIOS } from "./job-types.js";
+import { ALL_IMAGE_JOB_TYPES, COMPLIANCE_PLATFORMS, IMAGE_EDIT_OPS, IMAGE_MODES, IMAGE_SIZES, PIPELINE_JOB_TYPES, AUDIO_JOB_TYPES, VIDEO_ASPECT_RATIOS } from "./job-types.js";
 
 export const ImageGenerateInputSchema = z
   .object({
@@ -33,6 +33,33 @@ export const ImageGenerateOutputSchema = z.object({
 });
 
 export type ImageGenerateOutput = z.infer<typeof ImageGenerateOutputSchema>;
+
+// ── Image Studio edit ops（电商后处理：白底/换背景/扩图/局部调整） ──
+// worker 侧 image.edit 已就绪；remove_bg 为本地抠图免 prompt，其余依赖
+// prompt 约束保证商品主体不变。size 与 worker payload 同格式（WxH），
+// 缺省时服务端取源图尺寸。
+
+export const ImageEditInputSchema = z
+  .object({
+    source_asset_id: z.string().uuid(),
+    edit_op: z.enum(IMAGE_EDIT_OPS),
+    prompt: z.string().max(4000).optional(),
+    model_id: z.string().min(1),
+    size: z.string().regex(/^\d{3,4}x\d{3,4}$/).optional(),
+    negative_prompt: z.string().max(1000).optional(),
+    force: z.boolean().default(false),
+  })
+  .superRefine((val, ctx) => {
+    if (val.edit_op !== "remove_bg" && !val.prompt?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "prompt is required for this edit_op",
+        path: ["prompt"],
+      });
+    }
+  });
+
+export type ImageEditInput = z.infer<typeof ImageEditInputSchema>;
 
 // ── Video Studio (standalone generation, mirrors the image studio) ──
 
@@ -129,8 +156,28 @@ export const ImageJobPayloadSchema = z.object({
   }),
   input: z.object({
     prompt: z.string(),
-    size: z.enum(IMAGE_SIZES),
+    // 画布侧电商比例会产出 IMAGE_SIZES 之外的合法 WxH（如 1024x1536），
+    // 桥接层只校验形状，具体尺寸由模型能力兜底。
+    size: z.string().regex(/^\d{3,4}x\d{3,4}$/),
     reference_storage_keys: z.array(z.string()).optional(),
+    source_storage_key: z.string().optional(),
+    mask_storage_key: z.string().optional(),
+    edit_op: z.enum(IMAGE_EDIT_OPS).optional(),
+    seed: z.number().int().min(0).optional(),
+    text_layers: z
+      .array(
+        z.object({
+          text: z.string().min(1),
+          x: z.number().min(0).max(1),
+          y: z.number().min(0).max(1),
+          font_size: z.number().int().min(8).max(512),
+          color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+          align: z.enum(["left", "center", "right"]).optional(),
+          font: z.string().optional(),
+        }),
+      )
+      .optional(),
+    compliance_platforms: z.array(z.enum(COMPLIANCE_PLATFORMS)).optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -139,6 +186,11 @@ export const ImageJobPayloadSchema = z.object({
   }),
   cache_key: z.string(),
   timeout_ms: z.number().int().positive(),
+  // provider 瞬时失败（rate_limited/timeout）时 Python worker 的已尝试次数，
+  // 首次执行缺省为 0；重试由 worker 侧退避后重入队完成。
+  attempt: z.number().int().min(0).max(5).optional(),
+  // W3C traceparent，贯通 TS 决策层 → BullMQ → Python worker 的观测链。
+  traceparent: z.string().optional(),
 });
 
 export type ImageJobPayloadValidated = z.infer<typeof ImageJobPayloadSchema>;
@@ -147,7 +199,7 @@ export type ImageJobPayloadValidated = z.infer<typeof ImageJobPayloadSchema>;
 
 export const VideoJobPayloadSchema = z.object({
   job_id: z.string().uuid(),
-  job_type: z.enum(["shot.video"]),
+  job_type: z.enum(["shot.video", "video.t2v", "video.i2v"]),
   model_id: z.string(),
   credential: z.object({
     class_path: z.string(),
@@ -155,12 +207,26 @@ export const VideoJobPayloadSchema = z.object({
     base_url: z.string().optional(),
     model: z.string().optional(),
   }),
+  // 容量类失败（免费档拥堵/限流）时依次降级尝试的备用模型链
+  fallback_credentials: z
+    .array(
+      z.object({
+        class_path: z.string(),
+        api_key: z.string(),
+        base_url: z.string().optional(),
+        model: z.string().optional(),
+        label: z.string().optional(),
+      }),
+    )
+    .optional(),
   input: z.object({
     prompt: z.string(),
     first_frame_storage_key: z.string().optional(),
     last_frame_storage_key: z.string().optional(),
     duration_sec: z.number().int().positive().optional(),
     resolution: z.string().optional(),
+    aspect_ratio: z.string().optional(),
+    fps: z.number().int().optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -180,6 +246,9 @@ export const ConcatJobPayloadSchema = z.object({
   job_type: z.enum(["concat.videos"]),
   input: z.object({
     storage_keys: z.array(z.string()),
+    // Per-clip subtitle text (aligned with storage_keys; null = no subtitle
+    // for that clip). Present only when the concat node opts into burning.
+    subtitles: z.array(z.string().nullable()).optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -230,6 +299,8 @@ export const JobEventSchema = z.discriminatedUnion("type", [
           }),
         )
         .optional(),
+      // Agent bridge results (characters, scripts, selections, trees).
+      result: z.record(z.string(), z.unknown()).optional(),
     }),
   }),
   z.object({
@@ -268,6 +339,34 @@ export const PipelineJobPayloadSchema = z.object({
       .optional(),
     user_requirement: z.string().optional(),
     reference_storage_keys: z.array(z.string()).optional(),
+    // ── ViMax agent bridge inputs ──
+    idea: z.string().optional(),
+    story: z.string().optional(),
+    novel_text: z.string().optional(),
+    max_events: z.number().int().positive().optional(),
+    max_scenes_per_event: z.number().int().positive().optional(),
+    character: z
+      .object({
+        name: z.string(),
+        description: z.string(),
+      })
+      .optional(),
+    style: z.string().optional(),
+    reference_pairs: z
+      .array(
+        z.object({
+          storage_key: z.string(),
+          text: z.string(),
+        }),
+      )
+      .optional(),
+    candidate_storage_keys: z.array(z.string()).optional(),
+    target_description: z.string().optional(),
+    cameras: z.array(z.record(z.string(), z.unknown())).optional(),
+    shot_descs: z.array(z.record(z.string(), z.unknown())).optional(),
+    ff_desc: z.string().optional(),
+    lf_desc: z.string().optional(),
+    motion_desc: z.string().optional(),
   }),
   callback: z.object({
     event_channel: z.string(),
@@ -288,7 +387,20 @@ export const AudioJobPayloadSchema = z.object({
   input: z.object({
     prompt: z.string(),
     duration_sec: z.number().int().positive().optional(),
+    // ── TTS (audio.tts) ──
+    text: z.string().optional(),
+    voice: z.string().optional(),
   }),
+  // TTS routes through a vendor generator (same credential contract as
+  // image/video jobs); the silent-WAV stub ignores it.
+  credential: z
+    .object({
+      class_path: z.string(),
+      api_key: z.string(),
+      base_url: z.string().optional(),
+      model: z.string().optional(),
+    })
+    .optional(),
   callback: z.object({
     event_channel: z.string(),
     upload_bucket: z.string(),

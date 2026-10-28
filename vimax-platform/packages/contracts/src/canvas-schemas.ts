@@ -252,6 +252,62 @@ export const StoryPushInputSchema = z.object({
 
 export type StoryPushInput = z.infer<typeof StoryPushInputSchema>;
 
+// ── ViMax agent bridge actions (全量 Agent 接入) ────────────────────
+
+/** Script-node agent actions: idea2script / plan_script / enhance_script /
+ * script2characters / camera_tree. */
+export const ScriptAgentActionInputSchema = z.object({
+  canvas_id: z.string().uuid(),
+  node_id: z.string().uuid(),
+  user_requirement: z.string().optional(),
+});
+
+export type ScriptAgentActionInput = z.infer<typeof ScriptAgentActionInputSchema>;
+
+export const Novel2ScenesInputSchema = z.object({
+  canvas_id: z.string().uuid(),
+  node_id: z.string().uuid(),
+  max_events: z.number().int().min(1).max(10).default(3),
+  max_scenes_per_event: z.number().int().min(1).max(5).default(2),
+});
+
+export type Novel2ScenesInput = z.infer<typeof Novel2ScenesInputSchema>;
+
+export const NodeAgentActionInputSchema = z.object({
+  canvas_id: z.string().uuid(),
+  node_id: z.string().uuid(),
+});
+
+export type NodeAgentActionInput = z.infer<typeof NodeAgentActionInputSchema>;
+
+export const CharacterPortraitsInputSchema = z.object({
+  canvas_id: z.string().uuid(),
+  node_id: z.string().uuid(),
+  style: z.string().optional(),
+});
+
+export type CharacterPortraitsInput = z.infer<typeof CharacterPortraitsInputSchema>;
+
+// ── Ad operations (广告批量动作) ─────────────────────────────────────
+
+export const AdVariantsInputSchema = z.object({
+  canvas_id: z.string().uuid(),
+  node_id: z.string().uuid(),
+  hook_types: z
+    .array(z.enum(["pain_question", "counter_intuition", "result_first", "identity", "suspense"]))
+    .max(4)
+    .optional(),
+  count: z.number().int().min(1).max(4).optional(),
+});
+
+export type AdVariantsInput = z.infer<typeof AdVariantsInputSchema>;
+
+export const ProductUrlInputSchema = z.object({
+  url: z.string().url(),
+});
+
+export type ProductUrlInput = z.infer<typeof ProductUrlInputSchema>;
+
 // ── Auto Pipeline (一键自动生成) ────────────────────────────────────
 
 export const AutoPipelineInputSchema = z.object({

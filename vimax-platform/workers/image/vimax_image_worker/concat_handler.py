@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 class ConcatJobInput(BaseModel):
     storage_keys: list[str]
+    # Per-clip subtitle text aligned with storage_keys (null = skip that clip).
+    # Present only when the concat node opts into burning subtitles.
+    subtitles: list[str | None] | None = None
 
 
 class ConcatJobCallback(BaseModel):
@@ -41,6 +45,47 @@ class ConcatJobPayload(BaseModel):
 def _check_ffmpeg() -> bool:
     """Check if ffmpeg is available on the system."""
     return shutil.which("ffmpeg") is not None
+
+
+def _probe_duration(path: Path) -> float:
+    """Return the clip's real duration in seconds via ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed on {path.name}: {result.stderr}")
+    return float(result.stdout.strip())
+
+
+def _format_srt_time(total_sec: float) -> str:
+    ms = max(0, int(round(total_sec * 1000)))
+    hours, rest = divmod(ms, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def _build_srt(subtitles: list[str | None], durations: list[float]) -> str:
+    """Cue per clip: [clip start, clip start + min(clip duration, 8s)] so the
+    text stays readable without spilling across shots."""
+    lines: list[str] = []
+    cursor = 0.0
+    index = 1
+    for text, duration in zip(subtitles, durations):
+        if text and text.strip():
+            end = cursor + min(duration, 8.0)
+            lines.append(
+                f"{index}\n{_format_srt_time(cursor)} --> {_format_srt_time(end)}\n{text.strip()}"
+            )
+            index += 1
+        cursor += duration
+    return "\n\n".join(lines) + "\n"
 
 
 def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
@@ -66,6 +111,27 @@ def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
         raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
 
 
+def _burn_subtitles(input_path: Path, srt_path: Path, output_path: Path) -> None:
+    """Re-encode once with the subtitles filter (libass). CJK rendering needs
+    a CJK font in the image — fonts-noto-cjk is installed in the Dockerfile,
+    or point SUBTITLE_FONT at a font family fontconfig knows."""
+    font = os.environ.get("SUBTITLE_FONT", "Noto Sans CJK SC")
+    style = f"FontName={font},FontSize=16,Outline=1,MarginV=28,Alignment=2"
+    filter_arg = f"subtitles={srt_path.as_posix()}:force_style='{style}'"
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),
+        "-vf", filter_arg,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "copy", "-movflags", "+faststart",
+        str(output_path),
+    ]
+    logger.info("Burning subtitles: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg subtitle burn failed: {result.stderr}")
+
+
 async def _run_concat(payload: ConcatJobPayload, redis_client) -> None:
     reporter = JobReporter(redis_client, payload.callback.event_channel, payload.job_id)
     await reporter.started()
@@ -88,10 +154,23 @@ async def _run_concat(payload: ConcatJobPayload, redis_client) -> None:
             bucket=payload.callback.upload_bucket,
         )
 
-        await reporter.progress(40, "Concatenating videos with ffmpeg")
-
+        subtitles = payload.input.subtitles
         output_path = workdir / f"{payload.job_id}_merged.mp4"
-        await asyncio.to_thread(_concat_videos, local_paths, output_path)
+        if subtitles and any(text and text.strip() for text in subtitles):
+            await reporter.progress(30, "Building subtitle track")
+            durations = [await asyncio.to_thread(_probe_duration, p) for p in local_paths]
+            srt_path = workdir / "subtitles.srt"
+            srt_path.write_text(
+                _build_srt(subtitles, durations), encoding="utf-8"
+            )
+            await reporter.progress(40, "Concatenating + burning subtitles")
+            burned_path = workdir / f"{payload.job_id}_subtitled.mp4"
+            await asyncio.to_thread(_concat_videos, local_paths, output_path)
+            await asyncio.to_thread(_burn_subtitles, output_path, srt_path, burned_path)
+            output_path = burned_path
+        else:
+            await reporter.progress(40, "Concatenating videos with ffmpeg")
+            await asyncio.to_thread(_concat_videos, local_paths, output_path)
 
         await reporter.progress(80, "Uploading merged video")
 

@@ -103,12 +103,14 @@ test("resolveUpstreamInputs returns assets from edges targeting the node", () =>
   assert.equal(result.length, 2);
   assert.deepEqual(result[0], {
     assetId: "asset-1",
+    sourceNodeId: "img1",
     sourceHandle: "output",
     targetHandle: "first_frame",
     sourceNodeType: "image",
   });
   assert.deepEqual(result[1], {
     assetId: "asset-2",
+    sourceNodeId: "img2",
     sourceHandle: "output",
     targetHandle: "last_frame",
     sourceNodeType: "image",
@@ -150,8 +152,8 @@ test("resolveUpstreamInputs returns nothing for a node with no incoming edges", 
 
 test("pickByHandle returns the asset bound to the given target handle", () => {
   const inputs = [
-    { assetId: "ff", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
-    { assetId: "lf", sourceHandle: "output", targetHandle: "last_frame", sourceNodeType: "image" },
+    { assetId: "ff", sourceNodeId: "n1", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
+    { assetId: "lf", sourceNodeId: "n2", sourceHandle: "output", targetHandle: "last_frame", sourceNodeType: "image" },
   ];
   assert.equal(pickByHandle(inputs, "first_frame"), "ff");
   assert.equal(pickByHandle(inputs, "last_frame"), "lf");
@@ -159,7 +161,7 @@ test("pickByHandle returns the asset bound to the given target handle", () => {
 
 test("pickByHandle returns null when no input carries the handle", () => {
   const inputs = [
-    { assetId: "ff", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
+    { assetId: "ff", sourceNodeId: "n1", sourceHandle: "output", targetHandle: "first_frame", sourceNodeType: "image" },
   ];
   assert.equal(pickByHandle(inputs, "last_frame"), null);
   assert.equal(pickByHandle([], "first_frame"), null);
@@ -167,8 +169,8 @@ test("pickByHandle returns null when no input carries the handle", () => {
 
 test("pickByHandle returns the first match when handles collide", () => {
   const inputs = [
-    { assetId: "a", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
-    { assetId: "b", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
+    { assetId: "a", sourceNodeId: "n3", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
+    { assetId: "b", sourceNodeId: "n4", sourceHandle: "output", targetHandle: "reference", sourceNodeType: "image" },
   ];
   assert.equal(pickByHandle(inputs, "reference"), "a");
 });
@@ -368,8 +370,8 @@ test("inferAutoEdges pairs shots to images by index", () => {
   ]);
 });
 
-test("inferAutoEdges folds surplus sources onto the last target", () => {
-  // 3 shots, 1 image → shot3 also feeds image1
+test("inferAutoEdges leaves surplus sources dangling instead of double-feeding a target", () => {
+  // 3 shots, 1 image → only the first shot feeds it; 一个目标不接两条同类输入
   _counter = 0;
   const edges = inferAutoEdges(
     [AW("sh1", "shot"), AW("sh2", "shot"), AW("sh3", "shot"), AW("im1", "image")],
@@ -377,8 +379,41 @@ test("inferAutoEdges folds surplus sources onto the last target", () => {
   );
   assert.deepEqual(pairs(edges), [
     ["sh1", "im1", "first_frame", "reference"],
-    ["sh2", "im1", "first_frame", "reference"],
-    ["sh3", "im1", "first_frame", "reference"],
+  ]);
+});
+
+test("inferAutoEdges never re-wires nodes already connected by the same rule (storyboard-retry regression)", () => {
+  // 分镜重跑后的典型现场：旧链 2 video 已各自接好 image，新链 3 张 image。
+  // 折叠配对曾把新 image 再接到旧 video 上（重复 first_frame 边）。
+  _counter = 0;
+  const nodes = [
+    AW("v1-old", "video"), AW("v2-old", "video"),
+    AW("i1-old", "image"), AW("i2-old", "image"),
+    AW("i1-new", "image"), AW("i2-new", "image"), AW("i3-new", "image"),
+  ];
+  const existing = [
+    { sourceNodeId: "i1-old", targetNodeId: "v1-old", sourceHandle: "output", targetHandle: "first_frame" },
+    { sourceNodeId: "i2-old", targetNodeId: "v2-old", sourceHandle: "output", targetHandle: "first_frame" },
+  ];
+  const edges = inferAutoEdges(nodes, genId, existing);
+  const imgToVid = pairs(edges).filter(([s, t]) => s!.startsWith("i") && t!.startsWith("v"));
+  assert.deepEqual(imgToVid, []);
+});
+
+test("inferAutoEdges pairs only the untaken source with an untaken target", () => {
+  // i1 已接 v1；剩 i2/i3 与 v2 → 只有按序的第一个 i2 接入，i3 悬空等待自己的 video
+  _counter = 0;
+  const nodes = [
+    AW("v1", "video"), AW("v2", "video"),
+    AW("i1", "image"), AW("i2", "image"), AW("i3", "image"),
+  ];
+  const existing = [
+    { sourceNodeId: "i1", targetNodeId: "v1", sourceHandle: "output", targetHandle: "first_frame" },
+  ];
+  const edges = inferAutoEdges(nodes, genId, existing);
+  const imgToVid = pairs(edges).filter(([s, t]) => s!.startsWith("i") && t!.startsWith("v"));
+  assert.deepEqual(imgToVid, [
+    ["i2", "v2", "output", "first_frame"],
   ]);
 });
 

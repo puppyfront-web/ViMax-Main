@@ -35,6 +35,8 @@ import {
 import { NegativePromptChips } from "@/features/prompt-words/PromptWordChips";
 import { trpc } from "@/lib/trpc/client";
 import { useTranslations } from "next-intl";
+import { safeJsonParse } from "@/lib/safe-json";
+import { FALLBACK_VIDEO_MODEL_ID } from "@/features/canvas/utils/node-defaults";
 
 const DURATION_OPTIONS = [5, 10];
 const FPS_OPTIONS = [16, 24];
@@ -271,7 +273,7 @@ export default function StudioVideoPage() {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
-  const [modelId, setModelId] = useState("doubao-seedance-1-0-lite");
+  const [modelId, setModelId] = useState(FALLBACK_VIDEO_MODEL_ID);
   const [durationSec, setDurationSec] = useState(5);
   const [resolution, setResolution] = useState("720p");
   const [aspectRatio, setAspectRatio] = useState("16:9");
@@ -324,7 +326,7 @@ export default function StudioVideoPage() {
       sseRef.current = es;
       es.addEventListener("started", () => setJobStatus("running"));
       es.addEventListener("progress", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<Record<string, unknown>>(e.data, {});
         setJobProgress(d.percent ?? 0);
       });
       es.addEventListener("completed", () => {
@@ -339,7 +341,7 @@ export default function StudioVideoPage() {
           .catch(() => setErrorMessage(t("fetchUrlFailed")));
       });
       es.addEventListener("failed", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<{ error_message?: string }>(e.data, {});
         setJobStatus("failed");
         setErrorMessage(d.error_message ?? "Unknown error");
         es.close();

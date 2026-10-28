@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import type { PipelineStage, ServerWsMessage } from "@vimax/contracts";
 import { trpc } from "@/lib/trpc/client";
 import { sharedCanvasWs } from "@/lib/websocket/shared-ws";
@@ -16,7 +17,7 @@ export interface AutoPipelineState {
   runId: string | null;
   status: "idle" | "running" | "done" | "failed" | "cancelled";
   stages: PipelineStageState[];
-  summary: { succeeded: number; failed: number } | null;
+  summary: { succeeded: number; failed: number; skipped?: number; message?: string } | null;
 }
 
 const STAGE_ORDER: PipelineStage[] = ["storyboard", "shot", "image", "video", "concat"];
@@ -39,6 +40,25 @@ export function useAutoPipeline(canvasId: string) {
   });
 
   const runMutation = trpc.canvas.runAutoPipeline.useMutation();
+  const retryMutation = trpc.canvas.retryFailed.useMutation();
+  // WS 回调里触发重试——用 ref 避免 mutation 身份变化重订阅
+  const retryRef = useRef<(() => Promise<void>) | undefined>(undefined);
+
+  const retryFailed = useCallback(async () => {
+    try {
+      const res = await retryMutation.mutateAsync({ canvas_id: canvasId });
+      const enq = res.enqueued.length;
+      const skip = res.skipped.length;
+      if (enq === 0 && skip === 0) toast.info("没有需要重试的失败节点");
+      else toast.success(`已重试 ${enq} 个失败节点${skip ? `（${skip} 个暂不可重跑）` : ""}`);
+    } catch {
+      toast.error("重试失败节点出错");
+    }
+  }, [canvasId, retryMutation]);
+
+  useEffect(() => {
+    retryRef.current = retryFailed;
+  }, [retryFailed]);
 
   useEffect(() => {
     const unsubscribe = sharedCanvasWs.subscribe(canvasId, (msg: ServerWsMessage) => {
@@ -83,13 +103,29 @@ export function useAutoPipeline(canvasId: string) {
             ),
           }));
           break;
-        case "pipeline.finished":
+        case "pipeline.finished": {
+          const failed = msg.summary.failed;
           setState((prev) => ({
             ...prev,
-            status: msg.summary.cancelled ? "cancelled" : msg.summary.failed > 0 ? "failed" : "done",
-            summary: { succeeded: msg.summary.succeeded, failed: msg.summary.failed },
+            status: msg.summary.cancelled ? "cancelled" : failed > 0 ? "failed" : "done",
+            summary: {
+              succeeded: msg.summary.succeeded,
+              failed,
+              skipped: msg.summary.skipped,
+              message: msg.summary.message,
+            },
           }));
+          const text = msg.summary.message ?? `完成 ${msg.summary.succeeded} 项，失败 ${failed} 项`;
+          if (failed > 0) {
+            toast.warning(text, {
+              action: { label: "重试失败项", onClick: () => void retryRef.current?.() },
+              duration: 12000,
+            });
+          } else {
+            toast.success(text);
+          }
           break;
+        }
       }
     });
     return unsubscribe;
@@ -124,5 +160,5 @@ export function useAutoPipeline(canvasId: string) {
     });
   }, [canvasId, state.runId]);
 
-  return { state, start, cancel, isStarting: runMutation.isPending };
+  return { state, start, cancel, retryFailed, isStarting: runMutation.isPending };
 }

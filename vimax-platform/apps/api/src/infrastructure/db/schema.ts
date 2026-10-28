@@ -253,7 +253,10 @@ export const models = pgTable(
     isEnabled: integer("is_enabled").default(1),
     priority: integer("priority").default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
   },
   (table) => ({
     tenantTypeIdx: index("models_tenant_type_idx").on(table.tenantId, table.type),
@@ -370,6 +373,30 @@ export const agentMemorySummaries = pgTable(
 export type AgentMemoryMessage = typeof agentMemoryMessages.$inferSelect;
 export type AgentMemorySummary = typeof agentMemorySummaries.$inferSelect;
 
+// ── Feedback flywheel (implicit + explicit user signals on generations) ──
+
+export const feedbackEvents = pgTable(
+  "feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canvasId: uuid("canvas_id").references(() => canvases.id, { onDelete: "cascade" }),
+    nodeId: uuid("node_id"),
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    assetId: uuid("asset_id").references(() => assets.id, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    // pick / download / retry / discard / thumb_up / thumb_down
+    signal: text("signal").notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    canvasIdx: index("feedback_events_canvas_idx").on(table.canvasId),
+    jobIdx: index("feedback_events_job_idx").on(table.jobId),
+  }),
+);
+
+export type FeedbackEvent = typeof feedbackEvents.$inferSelect;
+
 // ── Video Workbench table ────────────────────────────────────────────
 
 export const workbenches = pgTable(
@@ -459,3 +486,161 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
+
+// ── E-commerce SKUs (seed-locked product identity) ────────────────────
+
+export const skus = pgTable(
+  "skus",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    category: text("category"),
+    attributes: jsonb("attributes").default({}),
+    // seed_lock 固定种子；空 = 尚未锁定
+    seed: integer("seed"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    updatedAtIdx: index("skus_updated_at_idx").on(table.updatedAt),
+  }),
+);
+
+export const skuImages = pgTable(
+  "sku_images",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    skuId: uuid("sku_id")
+      .notNull()
+      .references(() => skus.id, { onDelete: "cascade" }),
+    assetId: uuid("asset_id").references(() => assets.id),
+    // front / side / back / detail
+    angle: text("angle"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    skuIdIdx: index("sku_images_sku_id_idx").on(table.skuId),
+  }),
+);
+
+export type Sku = typeof skus.$inferSelect;
+export type NewSku = typeof skus.$inferInsert;
+export type SkuImage = typeof skuImages.$inferSelect;
+
+// ── Brand kits ────────────────────────────────────────────────────────
+
+export const brandKits = pgTable("brand_kits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  // Array<{hex, usage}>
+  colors: jsonb("colors"),
+  fonts: jsonb("fonts"),
+  slogan: text("slogan"),
+  bannedWords: jsonb("banned_words"),
+  guidelines: text("guidelines"),
+  logoAssetId: uuid("logo_asset_id").references(() => assets.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+
+export type BrandKit = typeof brandKits.$inferSelect;
+export type NewBrandKit = typeof brandKits.$inferInsert;
+
+// ── Knowledge base (FTS + JSONB embedding dual retrieval) ─────────────
+
+export const knowledgeDocuments = pgTable("knowledge_documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull(),
+  // manual / platform_rules / upload
+  sourceType: text("source_type"),
+  sourceUrl: text("source_url"),
+  content: text("content").notNull(),
+  status: text("status").notNull().default("ready"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const knowledgeChunks = pgTable(
+  "knowledge_chunks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    content: text("content").notNull(),
+    // number[] | null — null 时该块只参与 FTS 检索
+    embedding: jsonb("embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    documentIdIdx: index("knowledge_chunks_document_id_idx").on(table.documentId),
+  }),
+);
+
+export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;
+export type KnowledgeChunk = typeof knowledgeChunks.$inferSelect;
+
+// ── User memory profile (long-term user facts) ────────────────────────
+
+export const userMemoryProfile = pgTable("user_memory_profile", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  // { facts: Array<{key, value, confidence?, updatedAt}> }
+  profile: jsonb("profile").notNull().default({}),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+
+export type UserMemoryProfileRow = typeof userMemoryProfile.$inferSelect;
+
+// ── Sandbox (user scripts + runs on a canvas) ─────────────────────────
+
+export const sandboxScripts = pgTable("sandbox_scripts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  language: text("language").notNull().default("python"),
+  code: text("code").notNull(),
+  description: text("description"),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+
+export const sandboxRuns = pgTable(
+  "sandbox_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    scriptId: uuid("script_id").references(() => sandboxScripts.id, { onDelete: "set null" }),
+    canvasId: uuid("canvas_id")
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    // pending / running / completed / failed
+    status: text("status").notNull().default("pending"),
+    inputAssetIds: jsonb("input_asset_ids"),
+    outputAssetIds: jsonb("output_asset_ids"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    canvasIdIdx: index("sandbox_runs_canvas_id_idx").on(table.canvasId),
+  }),
+);
+
+export type SandboxScript = typeof sandboxScripts.$inferSelect;
+export type SandboxRun = typeof sandboxRuns.$inferSelect;

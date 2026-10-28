@@ -13,16 +13,13 @@ from pathlib import Path
 import redis
 from dotenv import load_dotenv
 
-from vimax_image_worker.handler import handle_image_job
+from vimax_image_worker.handler import IMAGE_QUEUE_NAME, IMAGE_QUEUE_REDIS_KEY, handle_image_job
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-QUEUE_NAME = "q.image.std"
-QUEUE_KEY = f"vimax:queue:{QUEUE_NAME}"
 
 
 def setup_vimax_path() -> None:
@@ -44,7 +41,7 @@ def main() -> None:
         socket_connect_timeout=5,
     )
 
-    logger.info("ViMax image worker started, queue=%s", QUEUE_NAME)
+    logger.info("ViMax image worker started, queue=%s", IMAGE_QUEUE_NAME)
 
     running = True
 
@@ -58,11 +55,11 @@ def main() -> None:
 
     while running:
         try:
-            item = client.brpop(QUEUE_KEY, timeout=5)
+            item = client.brpop(IMAGE_QUEUE_REDIS_KEY, timeout=5)
         except redis.RedisError:
             # Idle blocking connections get dropped by the server/NAT —
             # rebuild the client instead of taking the worker down.
-            logger.warning("Redis connection error on %s, reconnecting", QUEUE_KEY, exc_info=True)
+            logger.warning("Redis connection error on %s, reconnecting", IMAGE_QUEUE_REDIS_KEY, exc_info=True)
             client = redis.from_url(
                 redis_url,
                 decode_responses=True,

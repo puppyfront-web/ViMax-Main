@@ -15,6 +15,7 @@ import {
   Square,
 } from "lucide-react";
 import { markPromptSent, wasPromptSent } from "@/lib/prompt-dedup";
+import { useSandboxRunner } from "@/features/sandbox/useSandboxRunner";
 import { useChatMessages } from "./hooks/useChatMessages";
 import { Markdown } from "./Markdown";
 import { ModelSelect } from "@/features/models/ModelSelect";
@@ -31,6 +32,7 @@ interface ChatPanelProps {
   initialMode?: string;
   nodes?: Node[];
   autoPipelineState?: AutoPipelineState;
+  retryFailedNodes?: () => void;
   startAutoPipeline?: (scriptNodeId?: string) => Promise<string | undefined>;
   cancelAutoPipeline?: () => void;
   /** Node ids most recently created by the agent — rendered as jump chips. */
@@ -66,6 +68,7 @@ export function ChatPanel({
   autoPipelineState,
   startAutoPipeline,
   cancelAutoPipeline,
+  retryFailedNodes,
   recentNodeIds = [],
   selectedNodeIds = [],
   onFocusNode,
@@ -97,6 +100,8 @@ export function ChatPanel({
   });
 
   const [inputValue, setInputValue] = useState("");
+  // 订阅 sandbox.run_requested（执行状态在 sandbox runner 内部，暂无 UI 消费）
+  useSandboxRunner(canvasId);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [showConvList, setShowConvList] = useState(false);
@@ -221,6 +226,7 @@ export function ChatPanel({
         <PipelineStepper
           state={autoPipelineState}
           onCancel={cancelAutoPipeline}
+          onRetryFailed={retryFailedNodes}
         />
       )}
 
@@ -361,7 +367,7 @@ export function ChatPanel({
       )}
 
       {/* ── Input area ── */}
-      <div className="flex shrink-0 items-end gap-2 border-t border-[var(--color-hairline)] px-3.5 py-2.5">
+      <div className="flex relative items-end gap-2 border-t border-[var(--color-hairline)] px-3.5 py-2.5">
         <div className="flex flex-1 flex-col gap-1.5">
           {selectedNodeIds.length > 0 && (
             <button
@@ -425,7 +431,7 @@ export function ChatPanel({
             title="发送消息 (Enter)"
             aria-label="发送消息"
             className={cn(
-              "flex items-center justify-center rounded-lg p-2.5 transition-colors",
+              "flex items-center justify-center rounded-lg p-2.5 transition-colors absolute",
               inputValue.trim() && conversationId
                 ? "bg-[var(--color-accent)] text-[var(--color-accent-on)] hover:bg-[var(--color-accent-hover)]"
                 : "border border-[var(--color-hairline)] text-[var(--color-ink-tertiary)]",

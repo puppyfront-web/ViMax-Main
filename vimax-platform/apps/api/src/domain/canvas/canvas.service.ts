@@ -302,7 +302,7 @@ export async function autoWireCanvas(
     .from(canvasEdges)
     .where(eq(canvasEdges.canvasId, canvasId));
 
-  const inferred = inferAutoEdges(nodes, randomUUID);
+  const inferred = inferAutoEdges(nodes, randomUUID, existing);
   const fresh = subtractEdges(inferred, existing);
   if (fresh.length === 0) return [];
 

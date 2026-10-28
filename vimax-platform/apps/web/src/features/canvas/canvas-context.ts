@@ -109,6 +109,7 @@ export interface CanvasContextValue {
     opts?: { regenerate?: boolean },
   ) => Promise<string | undefined>;
   cancelAutoPipeline: () => void;
+  retryFailed: () => void;
   autoPipelineStarting: boolean;
   handleAlignNodes: (mode: AlignMode) => void;
   handleDistributeNodes: (mode: DistributeMode) => void;

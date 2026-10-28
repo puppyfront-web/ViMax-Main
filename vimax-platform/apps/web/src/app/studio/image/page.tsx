@@ -1,13 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Loader2, X } from "lucide-react";
-import type { ImageSize } from "@vimax/contracts";
+import { Check, Loader2, RotateCcw, X } from "lucide-react";
+import type { ImageEditOp, ImageSize } from "@vimax/contracts";
+import { ECOMMERCE_ASPECT_RATIOS, ECOMMERCE_SCENES } from "@vimax/contracts";
 import { trpc } from "@/lib/trpc/client";
 import { SegmentedControl } from "@vimax/ui";
 import { NegativePromptChips, ThesaurusChips } from "@/features/prompt-words/PromptWordChips";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+import { safeJsonParse } from "@/lib/safe-json";
+import { FALLBACK_IMAGE_MODEL_ID } from "@/features/canvas/utils/node-defaults";
 
 // ---------------------------------------------------------------------------
 // Types (local to this page; contracts are imported via tRPC inference)
@@ -16,12 +19,27 @@ import { useTranslations } from "next-intl";
 interface HistoryItem {
   job_id: string;
   status: string;
+  job_type?: string;
   prompt: string;
   mode?: string;
   model_id?: string;
+  edit_op?: string;
+  source_asset_id?: string;
+  output_asset_id?: string | null;
   thumbnail_url?: string;
   created_at: string;
 }
+
+/** 一键电商套图：从当前图派生 白底/主图/详情/A+ 横幅 四个编辑任务 */
+const ECOM_BATCH_PLAN = [
+  { edit_op: "replace_bg" as const, sceneId: "clean-white", aspectId: undefined },
+  { edit_op: "replace_bg" as const, sceneId: "studio", aspectId: "sq-1-1" },
+  { edit_op: "outpaint" as const, sceneId: undefined, aspectId: "pt-3-4" },
+  { edit_op: "outpaint" as const, sceneId: undefined, aspectId: "bn-16-9" },
+];
+
+const ECOM_OUTPAINT_PROMPT =
+  "extend the scene naturally beyond the original frame, seamless background continuation";
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -196,6 +214,181 @@ function ProgressBar({ percent }: { percent: number }) {
 }
 
 // ---------------------------------------------------------------------------
+// Edit panel — 对当前展示图发起 image.edit（白底/换背景/扩图/局部调整）
+// ---------------------------------------------------------------------------
+
+interface EditPanelProps {
+  disabled: boolean;
+  defaultModelId: string;
+  // listImageModels 的 tRPC 推断把 supports_reference 推成了宽松联合，这里按 unknown 收
+  models: { id: string; label: string; supports_reference?: unknown }[];
+  onEdit: (args: { op: ImageEditOp; prompt: string | undefined; size?: string; modelId: string }) => void;
+  onBatch: (modelId: string) => void;
+  batchPending: boolean;
+}
+
+function EditPanel({ disabled, defaultModelId, models, onEdit, onBatch, batchPending }: EditPanelProps) {
+  const t = useTranslations("studio");
+  const editModels = models.filter((m) => m.supports_reference !== false);
+  const [modelId, setModelId] = useState(defaultModelId);
+  const [op, setOp] = useState<ImageEditOp | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [aspectId, setAspectId] = useState<string>("");
+
+  // 默认模型不在可选列表时跟随第一个可用编辑模型
+  useEffect(() => {
+    if (editModels.length && !editModels.some((m) => m.id === modelId)) {
+      setModelId(editModels[0]!.id);
+    }
+  }, [editModels, modelId]);
+
+  const pick = (next: ImageEditOp) => {
+    setOp((prev) => (prev === next ? null : next));
+    setPrompt("");
+    setAspectId("");
+  };
+
+  const scenePrompt = (id: string) => ECOMMERCE_SCENES.find((s) => s.id === id)?.prompt ?? "";
+  const aspectSize = ECOMMERCE_ASPECT_RATIOS.find((a) => a.id === aspectId)?.size;
+
+  const run = () => {
+    if (!op) return;
+    onEdit({ op, prompt: op === "remove_bg" ? undefined : prompt.trim(), size: aspectSize, modelId });
+    setOp(null);
+    setPrompt("");
+    setAspectId("");
+  };
+
+  return (
+    <div className="flex w-full flex-col gap-3 rounded-xl border border-[var(--color-hairline)] bg-[var(--color-surface-1)] p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-[var(--color-ink-subtle)]">
+          {t("editSection")}
+        </span>
+        {/* 白底/透明底为预置 prompt 的快捷操作，无需表单 */}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onEdit({ op: "replace_bg", prompt: scenePrompt("clean-white"), modelId })}
+          className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40"
+        >
+          {t("editWhiteBg")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onEdit({ op: "remove_bg", prompt: undefined, modelId })}
+          className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40"
+        >
+          {t("editTransparent")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-pressed={op === "replace_bg"}
+          onClick={() => pick("replace_bg")}
+          className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40 aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-accent)]"
+        >
+          {t("editReplaceBg")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-pressed={op === "outpaint"}
+          onClick={() => pick("outpaint")}
+          className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40 aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-accent)]"
+        >
+          {t("editOutpaint")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-pressed={op === "inpaint"}
+          onClick={() => pick("inpaint")}
+          className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40 aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-accent)]"
+        >
+          {t("editInpaint")}
+        </button>
+        <button
+          type="button"
+          disabled={disabled || batchPending}
+          onClick={() => onBatch(modelId)}
+          className="ml-auto rounded-lg bg-[var(--color-accent)] px-2.5 py-1 text-xs font-semibold text-[var(--color-accent-on)] transition-colors hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {batchPending ? t("ecomBatchPending") : t("ecomBatch")}
+        </button>
+      </div>
+
+      {op && (
+        <div className="flex flex-col gap-2">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={t("editPromptPlaceholder")}
+            rows={2}
+            className="w-full resize-none rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] placeholder-[var(--color-ink-tertiary)] focus:border-[var(--color-accent)] focus:outline-none"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            {op === "outpaint" && (
+              <select
+                value={aspectId}
+                onChange={(e) => setAspectId(e.target.value)}
+                aria-label={t("editAspect")}
+                className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2 py-1.5 text-xs text-[var(--color-ink)] focus:border-[var(--color-accent)] focus:outline-none"
+              >
+                <option value="">{t("editKeepSource")}</option>
+                {ECOMMERCE_ASPECT_RATIOS.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            <select
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              aria-label={t("editModelLabel")}
+              className="rounded-lg border border-[var(--color-hairline-strong)] bg-[var(--color-surface)] px-2 py-1.5 text-xs text-[var(--color-ink)] focus:border-[var(--color-accent)] focus:outline-none"
+            >
+              {editModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={run}
+              disabled={op !== "remove_bg" && !prompt.trim()}
+              className="ml-auto rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-accent-on)] transition-colors hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t("editRun")}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditBadge({ op }: { op: string }) {
+  const t = useTranslations("studio");
+  const labels: Record<string, string> = {
+    remove_bg: t("badgeRemoveBg"),
+    replace_bg: t("badgeReplaceBg"),
+    outpaint: t("badgeOutpaint"),
+    inpaint: t("badgeInpaint"),
+  };
+  const label = labels[op];
+  if (!label) return null;
+  return (
+    <span className="shrink-0 rounded bg-[var(--color-surface-2)] px-1 py-0.5 text-[10px] text-[var(--color-ink-tertiary)]">
+      {label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
@@ -205,7 +398,7 @@ export default function StudioImagePage() {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
-  const [modelId, setModelId] = useState("doubao-seedream-4-0");
+  const [modelId, setModelId] = useState(FALLBACK_IMAGE_MODEL_ID);
   const [size, setSize] = useState<ImageSize>("1024x1024");
   const [refAssetIds, setRefAssetIds] = useState<string[]>([]);
 
@@ -214,12 +407,16 @@ export default function StudioImagePage() {
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [jobProgress, setJobProgress] = useState(0);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
+  const [outputAssetId, setOutputAssetId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [batchPending, setBatchPending] = useState(false);
 
   const sseRef = useRef<EventSource | null>(null);
 
   // Mutations
   const generateMutation = trpc.image.generate.useMutation();
+  const editMutation = trpc.image.edit.useMutation();
+  const utils = trpc.useUtils();
   const getJobQuery = trpc.image.getJob.useQuery(
     { job_id: activeJobId! },
     { enabled: !!activeJobId, refetchInterval: false },
@@ -258,24 +455,25 @@ export default function StudioImagePage() {
         setJobStatus("running");
       });
       es.addEventListener("progress", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<Record<string, number>>(e.data, {});
         setJobProgress(d.percent ?? 0);
       });
       es.addEventListener("completed", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<Record<string, unknown>>(e.data, {});
         setJobStatus("succeeded");
         setJobProgress(100);
         es.close();
         // Fetch output URL via tRPC
         getJobQuery.refetch().then((res) => {
           if (res.data?.output_url) setOutputUrl(res.data.output_url);
+          if (res.data?.output_asset_id) setOutputAssetId(res.data.output_asset_id);
         }).catch((err) => {
           console.error("Failed to fetch output URL:", err);
           setErrorMessage("图片已生成，但获取下载链接失败，请刷新页面重试");
         });
       });
       es.addEventListener("failed", (e) => {
-        const d = JSON.parse(e.data);
+        const d = safeJsonParse<{ error_message?: string }>(e.data, {});
         setJobStatus("failed");
         setErrorMessage(d.error_message ?? "Unknown error");
         es.close();
@@ -287,10 +485,28 @@ export default function StudioImagePage() {
     [getJobQuery],
   );
 
+  // 生成/编辑任务共用的跟踪入口：缓存命中直接取结果，否则订阅 SSE
+  const trackJob = useCallback(
+    async (res: { job_id: string; cache_hit: boolean; output_asset_id?: string }) => {
+      setActiveJobId(res.job_id);
+      if (res.cache_hit && res.output_asset_id) {
+        setJobStatus("cached");
+        setJobProgress(100);
+        setOutputAssetId(res.output_asset_id);
+        const job = await utils.image.getJob.fetch({ job_id: res.job_id });
+        if (job.output_url) setOutputUrl(job.output_url);
+      } else {
+        subscribeSSE(res.job_id);
+      }
+    },
+    [subscribeSSE, utils],
+  );
+
   // Generate
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
     setOutputUrl(null);
+    setOutputAssetId(null);
     setErrorMessage(null);
     setJobProgress(0);
     setJobStatus("queued");
@@ -306,21 +522,88 @@ export default function StudioImagePage() {
         force: false,
       });
 
-      setActiveJobId(res.job_id);
-
-      if (res.cache_hit && res.output_asset_id) {
-        setJobStatus("cached");
-        setJobProgress(100);
-        // Fetch output URL
-        const job = await getJobQuery.refetch();
-        if (job.data?.output_url) setOutputUrl(job.data.output_url);
-      } else {
-        subscribeSSE(res.job_id);
-      }
+      await trackJob(res);
     } catch (err) {
       setJobStatus("failed");
       setErrorMessage(err instanceof Error ? err.message : "Unknown error");
     }
+  };
+
+  // Edit — 对当前展示的图发起 image.edit（源图即输出，可链式编辑）
+  const handleEdit = async (args: {
+    op: ImageEditOp;
+    prompt: string | undefined;
+    size?: string;
+    modelId: string;
+  }) => {
+    const srcId = outputAssetId;
+    if (!srcId) return;
+    setOutputUrl(null);
+    setOutputAssetId(null);
+    setErrorMessage(null);
+    setJobProgress(0);
+    setJobStatus("queued");
+
+    try {
+      const res = await editMutation.mutateAsync({
+        source_asset_id: srcId,
+        edit_op: args.op,
+        prompt: args.prompt,
+        model_id: args.modelId,
+        size: args.size,
+        force: false,
+      });
+
+      await trackJob(res);
+    } catch (err) {
+      setJobStatus("failed");
+      setErrorMessage(err instanceof Error ? err.message : "Unknown error");
+    }
+  };
+
+  // 一键电商套图：白底/主图/详情/A+ 横幅并行派生，结果落历史列表
+  const handleEcomBatch = async (editModelId: string) => {
+    const srcId = outputAssetId;
+    if (!srcId || batchPending) return;
+    setBatchPending(true);
+
+    const scenePrompt = (id: string) =>
+      ECOMMERCE_SCENES.find((s) => s.id === id)?.prompt ?? ECOM_OUTPAINT_PROMPT;
+    const inputs = ECOM_BATCH_PLAN.map((p) => ({
+      source_asset_id: srcId,
+      edit_op: p.edit_op,
+      prompt: p.sceneId ? scenePrompt(p.sceneId) : ECOM_OUTPAINT_PROMPT,
+      model_id: editModelId,
+      size: ECOMMERCE_ASPECT_RATIOS.find((a) => a.id === p.aspectId)?.size,
+      force: false,
+    }));
+
+    const results = await Promise.allSettled(inputs.map((input) => editMutation.mutateAsync(input)));
+    setBatchPending(false);
+    void utils.image.listHistory.invalidate();
+
+    const okCount = results.filter((r) => r.status === "fulfilled").length;
+    if (okCount === inputs.length) {
+      toast.success(t("ecomBatchDone", { count: okCount }));
+    } else if (okCount > 0) {
+      toast.warning(t("ecomBatchPartial", { ok: okCount, total: inputs.length }));
+    } else {
+      toast.error(t("ecomBatchFailed"));
+    }
+  };
+
+  // 打开历史结果：先展示缩略图，再换成完整下载地址
+  const openHistoryItem = async (item: HistoryItem) => {
+    if (item.status !== "succeeded") return;
+    sseRef.current?.close();
+    setActiveJobId(item.job_id);
+    setJobStatus("succeeded");
+    setJobProgress(100);
+    setErrorMessage(null);
+    setOutputUrl(item.thumbnail_url ?? null);
+    setOutputAssetId(item.output_asset_id ?? null);
+    const job = await utils.image.getJob.fetch({ job_id: item.job_id }).catch(() => null);
+    if (job?.output_url) setOutputUrl(job.output_url);
   };
 
   // Reuse a history item's prompt
@@ -452,16 +735,17 @@ export default function StudioImagePage() {
           </button>
         </aside>
 
-        {/* Center: Preview */}
-        <main className="flex flex-1 flex-col items-center justify-center p-6">
+        {/* Center: Preview — overflow-y-auto：生成图 + 编辑面板超高时可滚动，
+            m-auto 居中在内容溢出时退化为顶部对齐，避免 justify-center 裁掉顶部 */}
+        <main className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto p-6">
           {!activeJobId && (
-            <p className="text-sm text-[var(--color-ink-subtle)]">
+            <p className="m-auto text-sm text-[var(--color-ink-subtle)]">
               {t("emptyHint")}
             </p>
           )}
 
           {activeJobId && (
-            <div className="w-full max-w-2xl flex flex-col items-center gap-4">
+            <div className="m-auto flex w-full max-w-2xl flex-col items-center gap-4">
               {/* Status bar */}
               <div className="flex w-full items-center gap-3">
                 <div
@@ -513,6 +797,10 @@ export default function StudioImagePage() {
                     src={outputUrl}
                     alt={t("generatedImageAlt")}
                     className="h-auto w-full"
+                    onError={(e) => {
+                      // 资产本地化 offload 后签名 URL 失效——隐藏破图
+                      e.currentTarget.style.visibility = "hidden";
+                    }}
                   />
                 </div>
               )}
@@ -544,6 +832,18 @@ export default function StudioImagePage() {
                   </button>
                 </div>
               )}
+
+              {/* Edit ops — 电商套图派生与单图再调整 */}
+              {outputAssetId && !isGenerating && (
+                <EditPanel
+                  disabled={isGenerating || editMutation.isPending}
+                  defaultModelId={modelId}
+                  models={modelData?.items ?? []}
+                  onEdit={handleEdit}
+                  onBatch={handleEcomBatch}
+                  batchPending={batchPending}
+                />
+              )}
             </div>
           )}
         </main>
@@ -564,13 +864,17 @@ export default function StudioImagePage() {
           )}
 
           {historyQuery.data?.items?.map((item: HistoryItem) => (
-            <button
+            <div
               key={item.job_id}
-              onClick={() => reuseHistory(item)}
-              title={t("reuseHint")}
-              className="group w-full border-b border-[var(--color-hairline)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-focus)]"
+              className="group flex w-full items-start gap-2 border-b border-[var(--color-hairline)] px-3 py-2.5 transition-colors hover:bg-[var(--color-surface-2)]"
             >
-              <div className="flex items-start gap-2">
+              <button
+                type="button"
+                onClick={() => openHistoryItem(item)}
+                disabled={item.status !== "succeeded"}
+                title={item.status === "succeeded" ? t("historyOpen") : t("reuseHint")}
+                className="flex min-w-0 flex-1 items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-focus)] disabled:cursor-default"
+              >
                 {item.thumbnail_url ? (
                   // 缩略图签名 URL 在资产被本地化 offload 后失效——隐藏破图
                   // eslint-disable-next-line @next/next/no-img-element
@@ -594,10 +898,13 @@ export default function StudioImagePage() {
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs text-[var(--color-ink)] transition-colors group-hover:text-[var(--color-accent)]">
-                    {item.prompt.slice(0, 40)}
-                    {item.prompt.length > 40 ? "…" : ""}
-                  </p>
+                  <div className="flex items-center gap-1.5">
+                    {item.edit_op && <EditBadge op={item.edit_op} />}
+                    <p className="truncate text-xs text-[var(--color-ink)] transition-colors group-hover:text-[var(--color-accent)]">
+                      {item.prompt.slice(0, 40)}
+                      {item.prompt.length > 40 ? "…" : ""}
+                    </p>
+                  </div>
                   <p className="mt-0.5 text-[10px] text-[var(--color-ink-tertiary)]">
                     {item.status === "succeeded"
                       ? t("statusSucceeded")
@@ -607,8 +914,17 @@ export default function StudioImagePage() {
                     · {new Date(item.created_at).toLocaleTimeString()}
                   </p>
                 </div>
-              </div>
-            </button>
+              </button>
+              <button
+                type="button"
+                onClick={() => reuseHistory(item)}
+                title={t("reuseHint")}
+                aria-label={t("reuseHint")}
+                className="mt-1 flex size-6 shrink-0 items-center justify-center rounded text-[var(--color-ink-tertiary)] opacity-0 transition-opacity hover:text-[var(--color-accent)] focus-visible:opacity-100 group-hover:opacity-100"
+              >
+                <RotateCcw className="size-3" />
+              </button>
+            </div>
           ))}
         </aside>
       </div>

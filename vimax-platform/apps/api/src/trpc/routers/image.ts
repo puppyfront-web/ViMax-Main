@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import {
   AssetConfirmUploadSchema,
   AssetUploadRequestSchema,
+  ImageEditInputSchema,
   ImageGenerateInputSchema,
 } from "@vimax/contracts";
 import { and, desc, eq, like, lt } from "drizzle-orm";
@@ -13,6 +14,7 @@ import {
 } from "../../domain/asset/asset.service.js";
 import { offloadAsset } from "../../domain/asset/asset-offload.js";
 import { generateImage, getImageJob } from "../../domain/image/generate.service.js";
+import { editImage } from "../../domain/image/edit.service.js";
 import { getJobWithOutputUrl } from "../../domain/job/job-event.service.js";
 import { getDb } from "../../infrastructure/db/client.js";
 import { assets, jobs } from "../../infrastructure/db/schema.js";
@@ -24,6 +26,7 @@ function mapError(err: unknown): never {
   const codeMap: Record<string, TRPCError["code"]> = {
     "input.asset_not_found": "NOT_FOUND",
     "input.asset_offloaded_local": "NOT_FOUND",
+    "input.source_asset_required": "BAD_REQUEST",
     "input.unsupported_model": "BAD_REQUEST",
     "provider.invalid_key": "PRECONDITION_FAILED",
   };
@@ -42,6 +45,15 @@ export const imageRouter = router({
     }
   }),
 
+  // 电商后处理：对既有图片做 白底/换背景/扩图/局部调整（image.edit）
+  edit: protectedProcedure.input(ImageEditInputSchema).mutation(async ({ input }) => {
+    try {
+      return await editImage(input);
+    } catch (err) {
+      mapError(err);
+    }
+  }),
+
   getJob: protectedProcedure
     .input(z.object({ job_id: z.string().uuid() }))
     .query(async ({ input }) => {
@@ -55,6 +67,8 @@ export const imageRouter = router({
         mode?: string;
         model_id?: string;
         size?: string;
+        edit_op?: string;
+        source_asset_id?: string;
       };
 
       return {
@@ -66,6 +80,8 @@ export const imageRouter = router({
         mode: snapshot.mode,
         model_id: snapshot.model_id,
         size: snapshot.size,
+        edit_op: snapshot.edit_op,
+        source_asset_id: snapshot.source_asset_id,
         output_asset_id: result.job.outputAssetId,
         output_url: result.outputUrl,
         error_code: result.job.errorCode,
@@ -114,6 +130,8 @@ export const imageRouter = router({
             prompt?: string;
             mode?: string;
             model_id?: string;
+            edit_op?: string;
+            source_asset_id?: string;
           };
           let thumbnailUrl: string | undefined;
           if (job.outputAssetId) {
@@ -129,9 +147,13 @@ export const imageRouter = router({
           return {
             job_id: job.id,
             status: job.status,
+            job_type: job.jobType,
             prompt: snapshot.prompt ?? "",
             mode: snapshot.mode,
             model_id: snapshot.model_id,
+            edit_op: snapshot.edit_op,
+            source_asset_id: snapshot.source_asset_id,
+            output_asset_id: job.outputAssetId,
             thumbnail_url: thumbnailUrl,
             created_at: job.queuedAt.toISOString(),
           };

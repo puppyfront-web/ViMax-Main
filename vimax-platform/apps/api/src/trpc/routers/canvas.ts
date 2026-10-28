@@ -15,6 +15,12 @@ import {
   ExportUrlInputSchema,
   Script2StoryboardInputSchema,
   AutoPipelineInputSchema,
+  ScriptAgentActionInputSchema,
+  Novel2ScenesInputSchema,
+  NodeAgentActionInputSchema,
+  CharacterPortraitsInputSchema,
+  AdVariantsInputSchema,
+  ProductUrlInputSchema,
 } from "@vimax/contracts";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
@@ -40,9 +46,22 @@ import {
   runStoryPush,
   runAudioGeneration,
   runAllDirty,
+  runAllFailed,
   runVariants,
   pickVariant,
+  runIdea2Script,
+  runPlanScript,
+  runEnhanceScript,
+  runScript2Characters,
+  runNovel2Scenes,
+  runSelectReference,
+  runSelectBestImage,
+  runCameraTree,
+  runCharacterPortraits,
+  runVoiceover,
 } from "../../domain/canvas/node-executor.service.js";
+import { runAdVariants } from "../../domain/canvas/ad-variants.js";
+import { extractProductFromUrl } from "../../domain/ad/product-url.js";
 import {
   WORKFLOW_TEMPLATES,
   getTemplateById,
@@ -157,6 +176,18 @@ export const canvasRouter = router({
     .mutation(async ({ input }) => {
       try {
         return await runAllDirty(input.canvas_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  // ── Retry all failed nodes ─────────────────────────────────────
+
+  retryFailed: protectedProcedure
+    .input(CanvasSnapshotInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runAllFailed(input.canvas_id);
       } catch (err) {
         mapError(err);
       }
@@ -278,11 +309,6 @@ export const canvasRouter = router({
         });
       }
 
-      const inferred = inferAutoEdges(
-        selected.map((n) => ({ id: n.id, type: n.type })),
-        randomUUID,
-      );
-
       const existing = await db
         .select({
           sourceNodeId: canvasEdges.sourceNodeId,
@@ -292,6 +318,12 @@ export const canvasRouter = router({
         })
         .from(canvasEdges)
         .where(eq(canvasEdges.canvasId, input.canvas_id));
+
+      const inferred = inferAutoEdges(
+        selected.map((n) => ({ id: n.id, type: n.type })),
+        randomUUID,
+        existing,
+      );
 
       const fresh = subtractEdges(inferred, existing);
       if (fresh.length > 0) {
@@ -374,6 +406,142 @@ export const canvasRouter = router({
         regenerate: input.regenerate,
       });
       return { run_id };
+    }),
+
+  // ── ViMax agent bridges (全量 Agent 接入) ────────────────────────
+
+  runIdea2Script: protectedProcedure
+    .input(ScriptAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runIdea2Script(input.canvas_id, input.node_id, input.user_requirement);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runPlanScript: protectedProcedure
+    .input(ScriptAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runPlanScript(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runEnhanceScript: protectedProcedure
+    .input(ScriptAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runEnhanceScript(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runScript2Characters: protectedProcedure
+    .input(ScriptAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runScript2Characters(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runNovel2Scenes: protectedProcedure
+    .input(Novel2ScenesInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runNovel2Scenes(
+          input.canvas_id,
+          input.node_id,
+          input.max_events,
+          input.max_scenes_per_event,
+        );
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runSelectReference: protectedProcedure
+    .input(NodeAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runSelectReference(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runSelectBestImage: protectedProcedure
+    .input(NodeAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runSelectBestImage(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runCameraTree: protectedProcedure
+    .input(ScriptAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runCameraTree(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  runCharacterPortraits: protectedProcedure
+    .input(CharacterPortraitsInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runCharacterPortraits(input.canvas_id, input.node_id, input.style);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  // ── Voiceover TTS (口播配音) ──────────────────────────────────────
+
+  runVoiceover: protectedProcedure
+    .input(NodeAgentActionInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runVoiceover(input.canvas_id, input.node_id);
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  // ── Ad hook variants (钩子变体批量生成) ───────────────────────────
+
+  runAdVariants: protectedProcedure
+    .input(AdVariantsInputSchema)
+    .mutation(async ({ input }) => {
+      try {
+        return await runAdVariants(input.canvas_id, input.node_id, {
+          hookTypes: input.hook_types,
+          count: input.count,
+        });
+      } catch (err) {
+        mapError(err);
+      }
+    }),
+
+  // ── Product URL extraction (商品链接元数据) ────────────────────────
+
+  extractProduct: protectedProcedure
+    .input(ProductUrlInputSchema)
+    .query(async ({ input }) => {
+      try {
+        return await extractProductFromUrl(input.url);
+      } catch (err) {
+        mapError(err);
+      }
     }),
 
   // ── Storyboard cell → Shot (分镜格转镜头) ───────────────────────

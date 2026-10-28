@@ -21,7 +21,7 @@ export const AGENT_REGISTRY: AgentDefinition[] = [
       "generate_script",
       "generate_storyboard",
       "extract_characters",
-      "generate_assets",
+      "generate_image",
       "activate_skill",
       "create_canvas_nodes",
       "run_node",

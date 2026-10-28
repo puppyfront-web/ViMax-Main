@@ -38,6 +38,8 @@ export interface ConcatCacheInput {
   /** sha256 of each clip, in order. */
   clip_sha256s: string[];
   transition: string;
+  /** Per-clip subtitle text — a subtitled concat is a different output. */
+  subtitles?: Array<string | null>;
 }
 
 export function buildConcatCacheKey(input: ConcatCacheInput): string {
@@ -45,6 +47,7 @@ export function buildConcatCacheKey(input: ConcatCacheInput): string {
     kind: "concat",
     clips: input.clip_sha256s,
     transition: input.transition,
+    subs: input.subtitles ?? null,
   };
   return createHash("sha256").update(stableStringify(canonical)).digest("hex");
 }

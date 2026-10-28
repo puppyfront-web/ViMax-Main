@@ -4,7 +4,7 @@
 
 import { eq, and, sql } from "drizzle-orm";
 import { getDb, schema } from "../../infrastructure/db/client.js";
-import { IMAGE_MODELS, VIDEO_MODELS, DEFAULT_TEXT_MODEL } from "@vimax/contracts";
+import { IMAGE_MODELS, VIDEO_MODELS, DEFAULT_TEXT_MODEL, DEFAULT_TTS_MODEL } from "@vimax/contracts";
 import type { ModelDescriptor, ModelType } from "@vimax/contracts";
 import type { ModelRow } from "../../infrastructure/db/schema.js";
 
@@ -96,10 +96,32 @@ const HARDCODED_TEXT_DEFAULTS: ModelDescriptor[] = [
   },
 ];
 
+const HARDCODED_TTS_DEFAULTS: ModelDescriptor[] = [
+  {
+    id: "_fallback_tts_0",
+    tenantId: "default",
+    name: DEFAULT_TTS_MODEL.label,
+    type: "tts" as ModelType,
+    provider: DEFAULT_TTS_MODEL.provider,
+    vendorId: null,
+    vendorModelId: DEFAULT_TTS_MODEL.vendorModelId,
+    classPath: DEFAULT_TTS_MODEL.classPath,
+    baseUrl: DEFAULT_TTS_MODEL.baseUrl,
+    apiKey: null,
+    config: { voice: DEFAULT_TTS_MODEL.voice },
+    isDefault: true,
+    isEnabled: true,
+    priority: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
 const ALL_FALLBACKS: Record<string, ModelDescriptor[]> = {
   image: HARDCODED_IMAGE_DEFAULTS,
   video: HARDCODED_VIDEO_DEFAULTS,
   text: HARDCODED_TEXT_DEFAULTS,
+  tts: HARDCODED_TTS_DEFAULTS,
 };
 
 // ── CRUD ──────────────────────────────────────────────────────────────

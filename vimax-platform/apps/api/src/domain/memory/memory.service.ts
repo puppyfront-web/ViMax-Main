@@ -8,7 +8,14 @@
 // similarity computed in TypeScript. This avoids the pgvector extension.
 
 import { getDb } from "../../infrastructure/db/client.js";
-import { sql } from "drizzle-orm";
+import {
+  agentConversations,
+  agentMemorySummaries,
+  agentMessages,
+  userMemoryProfile,
+} from "../../infrastructure/db/schema.js";
+import { asc, eq, sql } from "drizzle-orm";
+import { generateText } from "../agent/ai-service.js";
 
 // ── Database Schema (added to schema.ts) ─────────────────────────────
 // These tables are created via drizzle-kit push when schema.ts is updated.
@@ -277,4 +284,157 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
+}
+
+// ── User Memory Profile (long-term facts, P2) ────────────────────────
+
+export interface ProfileFact {
+  key: string;
+  value: string;
+  confidence?: number;
+  updatedAt: string;
+}
+
+/** Merge profile facts by key — incoming overrides existing, untouched
+ * facts keep their original updatedAt. Pure. */
+export function mergeProfileFacts(
+  existing: ProfileFact[],
+  incoming: ProfileFact[],
+): ProfileFact[] {
+  const byKey = new Map<string, ProfileFact>();
+  for (const fact of existing) byKey.set(fact.key, fact);
+  for (const fact of incoming) {
+    byKey.set(fact.key, { ...fact, updatedAt: new Date().toISOString() });
+  }
+  return [...byKey.values()];
+}
+
+async function saveProfileFacts(userId: string, incoming: ProfileFact[]): Promise<void> {
+  const db = getDb();
+  const [row] = await db
+    .select({ profile: userMemoryProfile.profile })
+    .from(userMemoryProfile)
+    .where(eq(userMemoryProfile.userId, userId))
+    .limit(1);
+  const current = (row?.profile as { facts?: ProfileFact[] } | null) ?? {};
+  const profile = { ...current, facts: mergeProfileFacts(current.facts ?? [], incoming) };
+  if (row) {
+    await db
+      .update(userMemoryProfile)
+      .set({ profile })
+      .where(eq(userMemoryProfile.userId, userId));
+  } else {
+    await db.insert(userMemoryProfile).values({ userId, profile });
+  }
+}
+
+export async function rememberFact(
+  userId: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  await saveProfileFacts(userId, [{ key, value, updatedAt: new Date().toISOString() }]);
+}
+
+/** Render the user's profile facts as a system-prompt fragment; ""
+ * when the profile is empty. */
+export async function getMemoryContext(userId: string): Promise<string> {
+  const db = getDb();
+  const [row] = await db
+    .select({ profile: userMemoryProfile.profile })
+    .from(userMemoryProfile)
+    .where(eq(userMemoryProfile.userId, userId))
+    .limit(1);
+  const facts = ((row?.profile as { facts?: ProfileFact[] } | null) ?? {}).facts ?? [];
+  if (facts.length === 0) return "";
+  return `## 用户记忆\n${facts.map((f) => `- ${f.key}: ${f.value}`).join("\n")}`;
+}
+
+const SUMMARY_SYSTEM_PROMPT =
+  "把以下对话压缩为一段不超过 200 字的中文摘要，保留关键决策与结论，只输出摘要正文。";
+
+export async function summarizeConversation(
+  conversationId: string,
+): Promise<string | null> {
+  const db = getDb();
+  const [conversation] = await db
+    .select({ canvasId: agentConversations.canvasId })
+    .from(agentConversations)
+    .where(eq(agentConversations.id, conversationId))
+    .limit(1);
+  const messages = await db
+    .select({ id: agentMessages.id, role: agentMessages.role, content: agentMessages.content })
+    .from(agentMessages)
+    .where(eq(agentMessages.conversationId, conversationId))
+    .orderBy(asc(agentMessages.createdAt));
+  if (messages.length === 0) return null;
+
+  const transcript = messages
+    .map((m) => `[${m.role}] ${m.content.slice(0, 300)}`)
+    .join("\n");
+  const result = await generateText({
+    system: SUMMARY_SYSTEM_PROMPT,
+    prompt: transcript,
+    temperature: 0.3,
+    maxTokens: 500,
+  });
+  const summary = result.text.trim().slice(0, 200);
+  if (!summary) return null;
+
+  await db.insert(agentMemorySummaries).values({
+    canvasId: conversation!.canvasId,
+    agentType: "production",
+    summary,
+    messageIds: messages.map((m) => String(m.id)),
+  });
+  return summary;
+}
+
+const PROFILE_SIGNAL_SYSTEM_PROMPT =
+  '从对话中提取关于用户的长期事实（偏好、行业、商品类目、风格要求等）。' +
+  '只输出 JSON：{"facts":[{"key":"事实名","value":"内容"}]}，没有可提取的事实时输出 {"facts":[]}。';
+
+/** Models wrap JSON in code fences or prose — pull out the outermost object. */
+function parseJsonArgument(text: string): unknown {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end <= start) throw new Error("no json object in output");
+  return JSON.parse(text.slice(start, end + 1)) as unknown;
+}
+
+export async function extractProfileSignals(
+  userId: string,
+  messages: Array<{ role: string; content: string }>,
+): Promise<void> {
+  if (messages.length === 0) return;
+  const transcript = messages
+    .map((m) => `[${m.role}] ${m.content.slice(0, 500)}`)
+    .join("\n");
+  const result = await generateText({
+    system: PROFILE_SIGNAL_SYSTEM_PROMPT,
+    prompt: transcript,
+    temperature: 0,
+  });
+  try {
+    const parsed = parseJsonArgument(result.text) as {
+      facts?: Array<{ key?: unknown; value?: unknown }>;
+    };
+    const incoming = (parsed.facts ?? [])
+      .filter(
+        (f): f is { key: string; value: string } =>
+          typeof f.key === "string" &&
+          f.key.trim() !== "" &&
+          typeof f.value === "string" &&
+          f.value.trim() !== "",
+      )
+      .map((f) => ({
+        key: f.key.trim(),
+        value: f.value.trim(),
+        updatedAt: new Date().toISOString(),
+      }));
+    if (incoming.length === 0) return;
+    await saveProfileFacts(userId, incoming);
+  } catch {
+    // 模型输出非 JSON — 静默跳过本轮画像提取
+  }
 }

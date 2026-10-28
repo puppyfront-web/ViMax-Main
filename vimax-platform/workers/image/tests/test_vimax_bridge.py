@@ -1,6 +1,10 @@
 import unittest
 
-from vimax_image_worker.vimax_bridge import shot_brief_to_cell
+from vimax_image_worker.vimax_bridge import (
+    credential_chat_model_args,
+    map_canvas_characters,
+    shot_brief_to_cell,
+)
 
 
 class _ShotBrief:
@@ -19,6 +23,63 @@ class StoryboardBridgeTest(unittest.TestCase):
         self.assertEqual(cell["cameraIdx"], 1)
         self.assertEqual(cell["shotIdx"], 2)
         self.assertEqual(cell["audioDesc"], "[Speaker] Alice (Calm): Hello.")
+
+
+class CredentialArgsTest(unittest.TestCase):
+    def test_missing_api_key_raises(self):
+        with self.assertRaises(ValueError):
+            credential_chat_model_args({"model": "gpt-x"})
+
+    def test_missing_model_raises(self):
+        with self.assertRaises(ValueError):
+            credential_chat_model_args({"api_key": "sk-test"})
+
+    def test_full_credential_maps_agent_args(self):
+        args = credential_chat_model_args(
+            {
+                "api_key": "sk-test",
+                "base_url": "https://api.example.com/v1",
+                "model": "gpt-x",
+                "model_provider": "openai",
+            }
+        )
+
+        self.assertEqual(
+            args,
+            {
+                "api_key": "sk-test",
+                "base_url": "https://api.example.com/v1",
+                "chat_model": "gpt-x",
+                "model_provider": "openai",
+            },
+        )
+
+    def test_base_url_defaults_empty(self):
+        args = credential_chat_model_args({"api_key": "sk-test", "model": "m"})
+
+        self.assertEqual(args["base_url"], "")
+        self.assertEqual(args["model_provider"], "openai")
+
+
+class MapCanvasCharactersTest(unittest.TestCase):
+    def test_maps_name_and_description(self):
+        characters = map_canvas_characters(
+            [{"name": "Alice", "description": "Long blonde hair."}]
+        )
+
+        self.assertEqual(len(characters), 1)
+        self.assertEqual(characters[0].identifier_in_scene, "Alice")
+        self.assertEqual(characters[0].static_features, "Long blonde hair.")
+        self.assertTrue(characters[0].is_visible)
+
+    def test_fills_defaults_for_blank_entries(self):
+        characters = map_canvas_characters([{}])
+
+        self.assertEqual(characters[0].identifier_in_scene, "Character0")
+        self.assertIn("Character0", characters[0].static_features)
+
+    def test_none_yields_empty_list(self):
+        self.assertEqual(map_canvas_characters(None), [])
 
 
 if __name__ == "__main__":

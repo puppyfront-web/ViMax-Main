@@ -1,5 +1,7 @@
 // ── Canvas Node Types ──────────────────────────────────────────────
 
+import type { ImageTextLayer } from "./job-types.js";
+
 export const CANVAS_NODE_TYPES = [
   "script",
   "character",
@@ -40,6 +42,16 @@ export const CANVAS_JOB_TYPES = [
   "image.split_grid",
   "pipeline.story_push",
   "audio.generate",
+  // ── ViMax agent bridge job types (full agent surface) ──
+  "pipeline.idea2script",
+  "pipeline.script2characters",
+  "pipeline.plan_script",
+  "pipeline.enhance_script",
+  "pipeline.novel2scenes",
+  "pipeline.select_reference",
+  "pipeline.select_best_image",
+  "pipeline.camera_tree",
+  "pipeline.character_portraits",
 ] as const;
 
 export type CanvasJobType = (typeof CANVAS_JOB_TYPES)[number];
@@ -70,6 +82,16 @@ export const CANVAS_QUEUES = {
   "image.split_grid": "q.image.std",
   "pipeline.story_push": "q.pipeline.full",
   "audio.generate": "q.audio.std",
+  // ── ViMax agent bridges all run on the pipeline worker ──
+  "pipeline.idea2script": "q.pipeline.full",
+  "pipeline.script2characters": "q.pipeline.full",
+  "pipeline.plan_script": "q.pipeline.full",
+  "pipeline.enhance_script": "q.pipeline.full",
+  "pipeline.novel2scenes": "q.pipeline.full",
+  "pipeline.select_reference": "q.pipeline.full",
+  "pipeline.select_best_image": "q.pipeline.full",
+  "pipeline.camera_tree": "q.pipeline.full",
+  "pipeline.character_portraits": "q.pipeline.full",
 } as const satisfies Record<string, string>;
 
 // ── Node Data Shapes (stored in canvas_nodes.data JSONB) ───────────
@@ -104,6 +126,10 @@ export interface ShotNodeData {
   lfVisCharIdxs: number[];
   /** 折叠为首帧 prompt 的 "Avoid: ..." 从句（见 runShotNode）。 */
   negativePrompt?: string;
+  /** 口播文案（广告镜头的台词）。TTS 以此合成配音；无则回退 audioDesc。 */
+  voiceoverText?: string;
+  /** 已合成的口播音频资产（audio.tts 完成后回填）。 */
+  voiceoverAssetId?: string;
   /** IDs of character nodes whose portraits (front view) are fed as
    * references when generating this shot's first frame — drives cross-shot
    * character consistency (mirrors idea2video's ff_vis_char_idxs). */
@@ -133,6 +159,48 @@ export interface ImageNodeData {
   aspectRatio?: string;
   /** Selected e-commerce scene preset id (see ECOMMERCE_SCENES). */
   scene?: string;
+  // ── 编辑/后处理（image.edit / image.text / image.compliance）──
+  /** 编辑操作：inpaint/outpaint 走模型（可带 mask），remove_bg/replace_bg 见 editOp。 */
+  editOp?: "inpaint" | "outpaint" | "remove_bg" | "replace_bg";
+  /** 编辑/压字/合规检查的输入图资产。 */
+  sourceAssetId?: string;
+  /** inpaint 遮罩资产（PNG，与 source 同尺寸）。 */
+  maskAssetId?: string;
+  /** 压在 sourceAssetId 上的文字图层（burn_text）。 */
+  textLayers?: ImageTextLayer[];
+  /** 平台合规预检目标（check_compliance）。 */
+  compliancePlatforms?: string[];
+  /** 合规检查结果（image.compliance 完成后回填，每平台一份）。 */
+  complianceReports?: ComplianceReport[];
+  /** 自动评估结果（evaluate 流水线回填）。 */
+  evaluation?: ImageEvaluation;
+  /** 自动 refine 已尝试次数（上限 1）。 */
+  evaluateAttempt?: number;
+}
+
+/** 平台合规检查报告（worker compliance.py 产出）。 */
+export interface ComplianceReport {
+  platform: string;
+  passed: boolean;
+  checks: Array<{
+    id: string;
+    label: string;
+    passed: boolean;
+    detail?: string;
+    manual_review?: boolean;
+  }>;
+}
+
+/** 生图自动评估分（evaluate 流水线回填，四维 0-1）。 */
+export interface ImageEvaluation {
+  overall: number;
+  dimensions: {
+    fidelity: number;
+    text: number;
+    aesthetics: number;
+    compliance: number;
+  };
+  critique?: string;
 }
 
 /**

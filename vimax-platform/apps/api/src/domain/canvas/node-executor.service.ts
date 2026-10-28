@@ -30,6 +30,7 @@ import {
   enqueueVideoJob,
 } from "../../infrastructure/queue/producer.js";
 import { buildStorageKey, getBucket } from "../../infrastructure/storage/s3.js";
+import { assertAssetsNotOffloaded } from "../asset/asset-offload.js";
 import { currentTrace, currentTraceparent } from "../../infrastructure/observability/trace.js";
 import {
   buildImageCacheKey,
@@ -897,6 +898,9 @@ async function runImageNode(
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
+  // 真正派发才需要输入二进制（缓存命中不用），已本地化的先让客户端恢复
+  await assertAssetsNotOffloaded(refAssetIds);
+
   const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
@@ -995,6 +999,12 @@ async function runImageEditJob(
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
+  await assertAssetsNotOffloaded([
+    sourceId,
+    ...(data.maskAssetId ? [data.maskAssetId] : []),
+    ...(data.referenceAssetIds ?? []),
+  ]);
+
   const apiKey = model.api_key ?? config.apiKeyFor(model.provider);
   if (!apiKey) throw new Error("provider.invalid_key");
 
@@ -1060,6 +1070,8 @@ async function runImageTextJob(
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
+  await assertAssetsNotOffloaded([sourceId]);
+
   const inputSnapshot = {
     mode: "post.text",
     size,
@@ -1109,6 +1121,8 @@ async function runImageComplianceJob(
 
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
+
+  await assertAssetsNotOffloaded([sourceId]);
 
   const inputSnapshot = {
     mode: "post.compliance",
@@ -1552,6 +1566,9 @@ async function runVideoNode(
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
 
+  // 真正派发才需要首帧/尾帧二进制（缓存命中不用），已本地化的先让客户端恢复
+  await assertAssetsNotOffloaded(frameIds);
+
   const jobId = randomUUID();
   const jobType = "shot.video" as const;
   const queueName = "q.video.std";
@@ -1706,6 +1723,8 @@ async function runConcatNode(
   const cacheKey = buildConcatCacheKey({ clip_sha256s: clipSha256s, transition, subtitles });
   const cached = await findCachedJob(cacheKey);
   if (cached?.outputAssetId) return applyCacheHit(node, cached);
+
+  await assertAssetsNotOffloaded(upstreamAssetIds);
 
   const jobId = randomUUID();
   const jobType = "concat.videos";

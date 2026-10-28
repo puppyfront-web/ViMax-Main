@@ -91,10 +91,12 @@ function mapError(err: unknown): never {
     "input.unsupported_model": "BAD_REQUEST",
     // prefix match for "canvas.job_in_flight:<job_type>"
     "canvas.job_in_flight": "BAD_REQUEST",
+    // prefix match for "asset.input_offloaded:<asset_id,...>"
+    "asset.input_offloaded": "PRECONDITION_FAILED",
     "provider.invalid_key": "PRECONDITION_FAILED",
   };
   const guarded = Object.keys(codeMap).find((key) =>
-    message.startsWith(key) && key === "canvas.job_in_flight",
+    message.startsWith(key) && (key === "canvas.job_in_flight" || key === "asset.input_offloaded"),
   );
   throw new TRPCError({
     code: (guarded && codeMap[guarded]) || codeMap[message] || "INTERNAL_SERVER_ERROR",
